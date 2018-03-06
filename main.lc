@@ -1,0 +1,9 @@
+import grammar
+
+language = grammar.read_file("suoml.grammar")
+
+main = ():
+    parse = language.read_file("sample.fml")
+    result = parse.traverse((rule, args, loc):
+        return [rule, args])
+    print(result)
