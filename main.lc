@@ -5,5 +5,95 @@ language = grammar.read_file("suoml.grammar")
 main = ():
     parse = language.read_file("sample.fml")
     result = parse.traverse((rule, args, loc):
-        return [rule, args])
-    print(result)
+        return getattr(actions, rule)(args...))
+
+    # TODO: Topological sort, detect cycles and fail on them.
+    #       No fixed point (recursion) yet, sorry.
+
+    for decl in result
+        print(decl)
+        print(decl.depends...)
+
+class Def
+    +init = (self, name, args, body):
+        self.name = name
+        self.args = args
+        self.body = body
+        self.depends = free_vars(body)
+
+    +repr = (self):
+        return repr(["Def", self.name, self.args, self.body])
+
+free_vars = (a):
+    if isinstance(a, Let)
+        r = free_vars(a.rhs)
+        r.discard(a.name)
+        r.update( free_vars(a.lhs) )
+        return r
+    if isinstance(a, Abs)
+        r = free_vars(a.body)
+        for arg in a.args
+            r.discard(arg)
+        return r
+    if isinstance(a, App)
+        r = free_vars(a.lhs)
+        for arg in a.args
+            r.update(free_vars(arg))
+        return r
+    if isinstance(a, Var)
+        return set([a.name])
+    if isinstance(a, Lit)
+        return set()
+    assert false, ["free vars for?", a]
+
+class Let
+    +init = (self, name, lhs, rhs):
+        self.name = name
+        self.lhs = lhs
+        self.rhs = rhs
+
+    +repr = (self):
+        return repr(["Let", self.name, self.lhs, self.rhs])
+
+class Abs
+    +init = (self, args, body):
+        self.args = args
+        self.body = body
+
+    +repr = (self):
+        return repr(["Abs", self.args, self.body])
+
+class App
+    +init = (self, lhs, args):
+        self.lhs = lhs
+        self.args = args
+
+    +repr = (self):
+        return repr(["App", self.lhs, self.args])
+
+class Var
+    +init = (self, name):
+        self.name = name
+
+    +repr = (self):
+        return self.name
+
+class Lit
+    +init = (self, value, type):
+        self.value = value
+        self.type = type
+
+    +repr = (self):
+        return repr(["Lit", self.value, self.type])
+
+actions = object({
+    def = Def
+    let = Let
+    abs = Abs
+    app = App
+    var = Var
+    string = (val):
+        return Lit(val, "string")
+    int = (val):
+        return Lit(val, "int")
+})
