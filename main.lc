@@ -4,22 +4,90 @@ language = grammar.read_file("suoml.grammar")
 
 main = ():
     parse = language.read_file("sample.fml")
-    result = parse.traverse((rule, args, loc):
+    decls = parse.traverse((rule, args, loc):
         return getattr(actions, rule)(args...))
 
-    # TODO: Topological sort, detect cycles and fail on them.
-    #       No fixed point (recursion) yet, sorry.
+    # Assuming that the subtyping algorithm is going to require a similar
+    # treatment as the Algorithm W in order to handle recursive clauses
+    # correctly. Therefore this builds the dependency graph so that the
+    # SCC algorithm then sort the expressions out.
+    decl_by_name = {}
+    for decl in decls
+        decl_by_name[decl.name] = decl
+    for decl in decls
+        for name in decl.free_vars
+            if name in decl_by_name
+                decl.depends.add(decl_by_name[name])
 
-    for decl in result
+    out = tarjan_find_scc(decls)
+    for group in out
+        if group.length != 1
+            print("Error: not ready for recursive definitions yet")
+            print("SCC detected:")
+            for decl in group
+                print(" ", decl)
+            exit(1)
+
+        # TODO: Ready for type inference.
+        decl = group.pop()
         print(decl)
-        print(decl.depends...)
+
+# The SCC finding is likely necessary for handling recursion.
+# For now we use it to detect recursion so it fails before causing issues.
+# https://en.wikipedia.org/wiki/Tarjan%27s_strongly_connected_components_algorithm
+# TODO: improve the comments to explain the algorithm.
+tarjan_find_scc = (decls):
+    index = 0
+    s = []
+    output = []
+
+    strong_connect = (decl):
+        # set depth index for v to the smallest unused index
+        decl.index = index
+        decl.lowlink = index
+        index += 1
+        s.append(decl)
+        decl.on_stack = true
+
+        # consider successors of v
+        for w in decl.depends
+            if w.index == null # successor not visited yet
+                strong_connect(w)
+                decl.lowlink = min(decl.lowlink, w.lowlink)
+            elif w.on_stack
+                # successor w is in stack S, in the current SCC
+                # Note: The next line may look odd - but is correct.
+                # It says w.index not w.lowlink; that is deliberate and from the original paper
+                decl.lowlink = min(decl.lowlink, w.index)
+            # if w is not on stack, then (v,w) is a cross-edge in the DFS and
+            #    must be ignored.
+        # If v is a root node, pop the stack and generate an SCC
+        if decl.lowlink == decl.index
+            scc = set()
+            w = null
+            while w != decl
+                w = s.pop()
+                w.on_stack = false
+                scc.add(w)
+            output.append(scc)
+
+    for decl in decls
+        if decl.index == null
+            strong_connect(decl)
+    return output
 
 class Def
     +init = (self, name, args, body):
         self.name = name
         self.args = args
         self.body = body
-        self.depends = free_vars(body)
+        self.free_vars = free_vars(body)
+        self.depends = set()
+
+        # For tarjan find SCC
+        self.index = null
+        self.lowlink = null
+        self.on_stack = false
 
     +repr = (self):
         return repr(["Def", self.name, self.args, self.body])

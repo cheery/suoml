@@ -2,16 +2,16 @@ file:
     (=stmt)*
 
 stmt:
-    symbol "(" sep(symbol, ",") ")" >expr / def
+    symbol >"(" sep(symbol, ",") ")" >expr / def
 
 expr:
     symbol "=" expr =expr               / let
     "fn" "(" sep(symbol, ",") ")" expr  / abs
-    expr >"(" sep(expr, ",") ")"        / app
     term
 
 term:
     "(" expr ")"
+    term >"(" sep(expr, ",") ")" / app
     symbol / var
     string / string
     int    / int
