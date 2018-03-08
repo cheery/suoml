@@ -28,9 +28,121 @@ main = ():
                 print(" ", decl)
             exit(1)
 
+
+        type_env = {}
+
         # TODO: Ready for type inference.
         decl = group.pop()
-        print(decl)
+        inference(Abs(decl.args, decl.body), type_env)
+
+    mapping = {}
+    node_to_name = (node):
+        try
+            return mapping[node]
+        except KeyError as _
+            vname = mapping.length.to_string(35) + 10
+            mapping[node] = vname
+            return vname
+
+    # http://www.graphviz.org/doc/info/attrs.html
+    lines = []
+    # "p -> q [dir=none];" is biunification
+    # "p -> q" is flow edge.
+
+    print("digraph inference {\n" ++ "\n".join(lines) ++ "\n}")
+
+inference = (a, type_env):
+    if isinstance(a, Abs)
+        type_env = dict(type_env)
+        ports = []
+        for arg in a.args
+            port = new_port()
+            ports.append(port)
+            type_env[arg] = port.output
+        return inference(a.body, type_env)
+
+    assert false, a
+
+
+
+new_port = ():
+    input = Node(-1)
+    output = Node(+1)
+    input.add_flow(output)
+    return (input=input, output=output)
+
+class Node
+    +init = (self, pol=+1):
+        self.pol = pol
+        self.heads = set()
+        self.flow = set()
+        self.p_transitions = {}
+        self.n_transitions = {}
+
+    add_flow = (self, other):
+        assert self.pol != other.pol
+        self.flow.add(other)
+        other.flow.add(self)
+
+    add_transition = (self, label, port):
+        if port.pol == self.pol
+            transitions = self.p_transitions
+        else
+            transitions = self.n_transitions
+        try
+            self.transitions[label].add(port)
+        except KeyError as _
+            self.transitions[label] = set([port])
+
+merge = (dst, src):
+    assert dst.pol == src.pol
+    for head in src.heads
+        dst.heads.add(head)
+    for v in src.flow
+        dst.add_flow(v)
+    for label, vs in src.p_transitions.items()
+        try
+            dst.p_transitions[label].update(vs)
+        except KeyError as _
+            dst.p_transitions[label] = set(vs)
+    for label, vs in src.n_transitions.items()
+        try
+            dst.n_transitions[label].update(vs)
+        except KeyError as _
+            dst.n_transitions[label] = set(vs)
+
+biunify = (pair, visited):
+    return if pair in visited
+    visited.add(pair)
+    p, q = pair
+    assert p.pol > q.pol, "biunify must have form (+p, -q)"
+
+    # Check that subtyping constraints hold
+    for x in p.heads
+        for y in q.heads
+            assert is_subtype(x, y), ["type error", x, y]
+
+    # Rewrites the graph, eliminating the constraint
+    for s in q.flow
+        merge(s, p)
+    for s in p.flow
+        merge(s, q)
+
+    # Constraint decomposition
+    for label, ss in p.p_transitions.items()
+        uu = q.p_transitions.get(label, [])
+        for s in ss
+            for u in uu
+                biunify([s,u], visited)
+    for label, ss in p.n_transitions.items()
+        uu = q.n_transitions.get(label, [])
+        for u in uu
+            for s in ss
+                biunify([u,s], visited)
+
+
+
+
 
 # The SCC finding is likely necessary for handling recursion.
 # For now we use it to detect recursion so it fails before causing issues.
