@@ -1,8 +1,8 @@
-main()
+main(argv)
     print("suber")
 
 test()
-    foo = bar
+    foo = print
     test2()
 
 test2()
