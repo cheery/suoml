@@ -13,3 +13,7 @@ test3(n, m)
 
 id(a)
     a
+
+vector_test(y)
+    v = vec3(1,y,3)
+    add(2, v)

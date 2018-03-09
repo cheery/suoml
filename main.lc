@@ -89,23 +89,42 @@ populate_type_env = (type_env):
     gt_t.heads.add("->")
     arg_0.heads.add("(ord)")
     arg_1.heads.add("(ord)")
-
     # TODO: There won't happen additional checks when we add this
     #       in. Therefore this is 'redundant' information except
     #       for the user, and for the subsequent compiler step
     #       that has to select an implementation for the function.
     comb_t.add_flow(arg_0)
     comb_t.add_flow(arg_1)
-
     type_env['gt'] = object({
         graph = set([gt_t, arg_0, arg_1, res_t, comb_t])
         root = gt_t
     })
 
-# TODO: This may be actually doing something really silly here.
-#       It treats every variable the same, which means that
-#       On 'Abs' and 'Let', the whole graph ends up being
-#       replicated every time.
+    vec3_t = Node(+1)
+    arg_0 = Node(-1)
+    arg_1 = Node(-1)
+    arg_2 = Node(-1)
+    res_t = Node(+1)
+    res_t.heads.add("vec")
+    vec3_t.add_transition(["dom", 0], arg_0)
+    vec3_t.add_transition(["dom", 1], arg_1)
+    vec3_t.add_transition(["dom", 2], arg_2)
+    vec3_t.add_transition(["cod"], res_t)
+    vec3_t.heads.add("->")
+    arg_0.heads.add("(vec)")
+    arg_1.heads.add("(vec)")
+    arg_2.heads.add("(vec)")
+    res_t.add_flow(arg_0)
+    res_t.add_flow(arg_1)
+    res_t.add_flow(arg_2)
+    type_env['vec3'] = object({
+        graph = set([vec3_t, arg_0, arg_1, arg_2, res_t])
+        root = vec3_t
+    })
+
+
+# TODO: This may be doing really silly things by
+#       generalizing every use of a variable.
 inference = (a, type_env, visited):
     if isinstance(a, Abs)
         graph = set()
@@ -149,6 +168,22 @@ inference = (a, type_env, visited):
         biunify([lhs_scheme.root, calltype], visited)
         return object({
             graph = graph
+            root = result.output
+        })
+    if isinstance(a, IfThenElse)
+        graph = set()
+        cond = inference(a.cond, type_env, visited)
+        boolean = Node(-1)
+        boolean.heads.add("bool")
+        graph.add(boolean)
+        biunify([cond, boolean], visited)
+        t = inference(a.t, type_env, visited)
+        f = inference(a.f, type_env, visited)
+        result = new_port(graph)
+        biunify([t, result.input], visited)
+        biunify([f, result.input], visited)
+        return object({
+            graph = graph | cond.graph | t.graph | f.graph
             root = result.output
         })
     if isinstance(a, Let)
@@ -480,9 +515,18 @@ biunify = (pair, visited):
 is_subtype = (x, y):
     if x == y
         return true
-    if x == "int" and (y == "(ord)" or y == "(add)")
+    if x == "int" and y in int_traits
+        return true
+    if x == "vec" and y in vec_traits
         return true
     return false
+
+int_traits = set([
+    "(ord)", "(add)", "(vec)"
+])
+vec_traits = set([
+    "(add)"
+])
 
 
 # The SCC finding is likely necessary for handling recursion.
@@ -547,7 +591,7 @@ class Def
         return repr(["Def", self.name, self.args, self.body])
 
 # TODO: to really test this out 'proper', we also may want
-#       freeform record types & if/then/else
+#       freeform record types
 
 free_vars = (a):
     if isinstance(a, Let)
@@ -564,6 +608,11 @@ free_vars = (a):
         r = free_vars(a.lhs)
         for arg in a.args
             r.update(free_vars(arg))
+        return r
+    if isinstance(a, IfThenElse)
+        r = free_vars(a.cond)
+        r.update(free_vars(a.t))
+        r.update(free_vars(a.f))
         return r
     if isinstance(a, Var)
         return set([a.name])
@@ -596,6 +645,15 @@ class App
     +repr = (self):
         return repr(["App", self.lhs, self.args])
 
+class IfThenElse
+    +init = (self, cond, t, f):
+        self.cond = cond
+        self.t = t
+        self.f = f
+
+    +repr = (self):
+        return repr(["If", self.cond, self.t, self.f])
+
 class Var
     +init = (self, name):
         self.name = name
@@ -616,6 +674,7 @@ actions = object({
     let = Let
     abs = Abs
     app = App
+    if_then_else = IfThenElse
     var = Var
     string = (val):
         return Lit(val, "string")

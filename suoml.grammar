@@ -7,6 +7,7 @@ stmt:
 expr:
     symbol "=" expr =expr               / let
     "fn" "(" sep(symbol, ",") ")" expr  / abs
+    "if" expr "then" expr "else" expr   / if_then_else
     term
 
 term:
