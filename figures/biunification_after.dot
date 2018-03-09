@@ -4,8 +4,8 @@ digraph biunification {
     o0 [label="int"];
     i0 [label="(+)"];
 
-    i1, i2 [label=""];
-    o1, o2 [label=""];
+    i1, i2 [label="(+)"];
+    o1, o2 [label="int"];
 
     i1 -> o0;
     i2 -> o0;
