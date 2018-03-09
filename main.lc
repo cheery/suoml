@@ -41,9 +41,9 @@ main = ():
 
         decl = group.pop()
         scheme = inference(Abs(decl.args, decl.body), type_env, visited)
-        scheme_r = reduce(scheme)
-        type_env[decl.name] = scheme_r
+        type_env[decl.name] = generalize(scheme)
 
+        scheme_r = reduce(scheme)
         print(decl.name, "::", to_raw_type(scheme_r))
 
 populate_type_env = (type_env):
@@ -154,7 +154,7 @@ inference = (a, type_env, visited):
     if isinstance(a, Let)
         lhs_scheme = inference(a.lhs, type_env, visited)
         type_env = dict(type_env)
-        type_env[a.name] = lhs_scheme
+        type_env[a.name] = generalize(lhs_scheme)
         rhs_scheme = inference(a.rhs, type_env, visited)
         return object({
             graph = lhs_scheme.graph | rhs_scheme.graph
@@ -171,11 +171,10 @@ inference = (a, type_env, visited):
         })
     assert false, ["unable to inference", a]
 
-# TODO: This current form of reduction likely destroys the
-#       (a,a) -> bool
-#       annotations. Though the annotation form itself may
-#       be redundant for the type inferencing step.
-reduce = (scheme):
+# Reduce and generalize are similar, but each serve
+# very different purpose which makes it reasonable to
+# have them apart.
+generalize = (scheme):
     subsets = {} 
     flow_sets = {}
 
@@ -204,6 +203,65 @@ reduce = (scheme):
 
         p_transitions = {}
         for label, ws in s.p_transitions.items()
+            extern = set()
+            for w in ws
+                if w not in scheme.graph
+                    extern.add(w)
+            ws.difference_update(extern)
+            p_transitions[label] = set([reduce_subset(pol, ws)]) | extern
+        s.p_transitions = p_transitions
+
+        n_transitions = {}
+        for label, ws in s.n_transitions.items()
+            extern = set()
+            for w in ws
+                if w not in scheme.graph
+                    extern.add(w)
+            ws.difference_update(extern)
+            n_transitions[label] = set([reduce_subset(-pol, ws)]) | extern
+        s.n_transitions = n_transitions
+
+        return s
+
+    node = scheme.root
+    root = reduce_subset(node.pol, set([node]))
+    for node, ss in flow_sets.items()
+        continue if node.pol > 0
+        for w in node.flow
+            qq = flow_sets.get(w, [])
+            for s in ss
+                for q in qq
+                    s.add_flow(q)
+    
+    return object({
+        graph = set(subsets.values())
+        root = root
+    })
+
+
+reduce = (scheme):
+    subsets = {} 
+    flow_sets = {}
+
+    reduce_subset = (pol, subset):
+        if subset in subsets
+            return subsets[subset]
+        subsets[subset] = s = Node(pol)
+        for n in subset
+            s.heads.update(n.heads)
+            try
+                flow_sets[n].add(s)
+            except KeyError as _
+                flow_sets[n] = [s]
+            for label, ws in n.p_transitions.items()
+                for w in ws
+                    s.add_transition(label, w)
+            for label, ws in n.n_transitions.items()
+                for w in ws
+                    s.add_transition(label, w)
+
+        p_transitions = {}
+        for label, ws in s.p_transitions.items()
             p_transitions[label] = set([reduce_subset(pol, ws)])
         s.p_transitions = p_transitions
 
@@ -214,17 +272,44 @@ reduce = (scheme):
 
         return s
 
+    stubs = set()
+
     node = scheme.root
     root = reduce_subset(node.pol, set([node]))
-    for node, s in flow_sets.items()
+    for node, ss in flow_sets.items()
         continue if node.pol > 0
         for w in node.flow
-            ss = flow_sets.get(w)
-            if ss
-                s.add_flow(ss)
-    
+            qq = flow_sets.get(w)
+            if not qq
+                stubs.add(w)
+            else
+                for s in ss
+                    for q in qq
+                        s.add_flow(q)
+
+    # The 'reduce' is called in order to print the type. The person
+    # reading the type is interested also in how the types relate to
+    # each other, in which case we want to know flow information that
+    # would not be important for the type inference.
+    extra_groups = set()
+    for stub in stubs
+        x = stub.flow.intersection(flow_sets.keys())
+        continue if x.length < 2
+        extra_groups.add([stub.pol, x])
+
+    # The size of extras here could be further reduced by
+    # being clever, but not certain whether extra cleverness here
+    # will help. TODO: check it out in practice
+    extras = set()
+    for pol, x in extra_groups
+        w = Node(pol)
+        for n in x
+            for q in flow_sets[n]
+                w.add_flow(q)
+        extras.add(w)
+
     return object({
-        graph = set(subsets.values())
+        graph = set(subsets.values()) | extras
         root = root
     })
 

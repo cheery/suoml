@@ -6,7 +6,10 @@ test()
     test2()
 
 test2()
-    test3(4)
+    test3(4, 5)
 
-test3(n)
-    gt(n, 3)
+test3(n, m)
+    gt(add(n, m), 3)
+
+id(a)
+    a
