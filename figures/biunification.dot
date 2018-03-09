@@ -1,0 +1,23 @@
+digraph biunification {
+    node [shape=circle, fixedsize=true];
+
+    o0 [label="int"];
+    i0 [label="(+)"];
+
+    i1, i2 [label=""];
+    o1, o2 [label=""];
+
+    i1 -> o0;
+    i2 -> o0;
+
+    o0 -> i0 [dir=none, label="int <: (+)"];
+
+    i0 -> o1;
+    i0 -> o2;
+
+    {
+        edge [style=invis];
+        i1 -> o1; i1 -> o2;
+        i2 -> o1; i2 -> o2;
+    }
+}
