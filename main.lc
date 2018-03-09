@@ -40,74 +40,11 @@ main = ():
             exit(1)
 
         decl = group.pop()
-        tp = inference(Abs(decl.args, decl.body), type_env, visited)
-        tp_r = reduce(tp)
-        type_env[decl.name] = tp_r
+        scheme = inference(Abs(decl.args, decl.body), type_env, visited)
+        scheme_r = reduce(scheme)
+        type_env[decl.name] = scheme_r
 
-        print(decl.name, "::", to_raw_type(tp_b))
-
-    mapping = {}
-    node_to_name = (node):
-        try
-            return mapping[node]
-        except KeyError as _
-            vname = (mapping.length + 10).to_string(35)
-            mapping[node] = vname
-            return vname
-
-    # Skipping the graphwiz -printout because it was much more
-    # trickier than reducing the types and producing a 'proper'
-    # printout.
-    
-    # TODO: implement greedy biclique decomposition for variables.
-
-    # http://www.graphviz.org/doc/info/attrs.html
-    lines = []
-
-    all_nodes = set()
-
-    flow_edges = set()
-    add_flow_edge = (edge...):
-        return if edge in flow_edges
-        flow_edges.add(edge)
-        q, p = edge
-        all_nodes.add(p)
-        all_nodes.add(q)
-        pn = node_to_name(p)
-        qn = node_to_name(q)
-        lines.append(qn ++ " -> " ++ pn ++ ";")
-        
-    # "p -> q" is flow edge.
-
-    for p,q in visited
-        all_nodes.add(p)
-        all_nodes.add(q)
-        pn = node_to_name(p)
-        qn = node_to_name(q)
-        lines.append(pn ++ " -> " ++ qn ++ " [dir=none];")
-
-        for w in p.flow
-            add_flow_edge(w, p)
-        for w in q.flow
-            add_flow_edge(q, w)
-
-    for v in all_nodes
-        vn = node_to_name(v)
-        lines.append(vn ++ "[label="
-            ++ repr(" ".join(v.heads)) ++ "];")
-
-        for label, ws in v.p_transitions.items()
-            for w in ws
-                wn = node_to_name(w)
-                lines.append(vn ++ " -> " ++ wn
-                    ++ " [label=" ++ repr(repr(label)) ++ "];")
-        for label, ws in v.n_transitions.items()
-            for w in ws
-                wn = node_to_name(w)
-                lines.append(vn ++ " -> " ++ wn
-                    ++ " [label=" ++ repr(repr(label)) ++ "];")
-
-    #print("digraph inference {\n" ++ "\n".join(lines) ++ "\n}")
+        print(decl.name, "::", to_raw_type(scheme_r))
 
 populate_type_env = (type_env):
     print_t = Node(+1)
@@ -115,55 +52,130 @@ populate_type_env = (type_env):
     arg_t.heads.add("string")
     print_t.add_transition(["dom", 0], arg_t)
     result_t = Node(+1)
-    result_t.heads.add("null")
+    result_t.heads.add("unit")
     print_t.add_transition(["cod"], result_t)
     print_t.heads.add("->")
-    type_env['print'] = print_t
+    type_env['print'] = object({
+        graph = set([print_t, arg_t, result_t])
+        root = print_t
+    })
 
+    add_t = Node(+1)
+    arg_0 = Node(-1)
+    arg_1 = Node(-1)
+    res_t = Node(+1)
+    add_t.add_transition(["dom", 0], arg_0)
+    add_t.add_transition(["dom", 1], arg_1)
+    add_t.add_transition(["cod"], res_t)
+    add_t.heads.add("->")
+    arg_0.add_flow(res_t)
+    arg_1.add_flow(res_t)
+    type_env['add'] = object({
+        graph = set([add_t, arg_0, arg_1, res_t])
+        root = add_t
+    })
+    arg_0.heads.add("(add)")
+    arg_1.heads.add("(add)")
+
+    gt_t = Node(+1)
+    arg_0 = Node(-1)
+    arg_1 = Node(-1)
+    comb_t = Node(+1)
+    res_t = Node(+1)
+    res_t.heads.add("bool")
+    gt_t.add_transition(["dom", 0], arg_0)
+    gt_t.add_transition(["dom", 1], arg_1)
+    gt_t.add_transition(["cod"], res_t)
+    gt_t.heads.add("->")
+    arg_0.heads.add("(ord)")
+    arg_1.heads.add("(ord)")
+
+    # TODO: There won't happen additional checks when we add this
+    #       in. Therefore this is 'redundant' information except
+    #       for the user, and for the subsequent compiler step
+    #       that has to select an implementation for the function.
+    comb_t.add_flow(arg_0)
+    comb_t.add_flow(arg_1)
+
+    type_env['gt'] = object({
+        graph = set([gt_t, arg_0, arg_1, res_t, comb_t])
+        root = gt_t
+    })
+
+# TODO: This may be actually doing something really silly here.
+#       It treats every variable the same, which means that
+#       On 'Abs' and 'Let', the whole graph ends up being
+#       replicated every time.
 inference = (a, type_env, visited):
     if isinstance(a, Abs)
+        graph = set()
         type_env = dict(type_env)
         ports = []
         for arg in a.args
-            port = new_port()
+            port = new_port(graph)
             ports.append(port)
-            type_env[arg] = port.output
+            type_env[arg] = object({
+                graph = set()
+                root = port.output
+            })
         result = inference(a.body, type_env, visited)
+        graph.update(result.graph)
         functype = Node(+1)
         for i in range(ports.length)
             functype.add_transition(
                 ["dom", i], ports[i].input)
-        functype.add_transition(["cod"], result)
+        functype.add_transition(["cod"], result.root)
         functype.heads.add("->")
-        return functype
+        return object({
+            graph = graph
+            root = functype
+        })
     if isinstance(a, App)
-        lhs_t = inference(a.lhs, type_env, visited)
+        graph = set()
+
+        lhs_scheme = inference(a.lhs, type_env, visited)
+        graph.update(lhs_scheme.graph)
         calltype = Node(-1)
         calltype.heads.add("->")
         i = 0
         for arg in a.args
-            calltype.add_transition(
-                ["dom", i], inference(arg, type_env, visited))
+            arg_scheme = inference(arg, type_env, visited)
+            calltype.add_transition(["dom", i], arg_scheme.root)
+            graph.update(arg_scheme.graph)
             i += 1
-        result = new_port()
+        result = new_port(graph)
         calltype.add_transition(
             ["cod"], result.input)
-        biunify([lhs_t, calltype], visited)
-        return result.output
+        biunify([lhs_scheme.root, calltype], visited)
+        return object({
+            graph = graph
+            root = result.output
+        })
     if isinstance(a, Let)
-        lhs_t = inference(a.lhs, type_env, visited)
+        lhs_scheme = inference(a.lhs, type_env, visited)
         type_env = dict(type_env)
-        type_env[a.name] = lhs_t
-        return inference(a.rhs, type_env, visited)
+        type_env[a.name] = lhs_scheme
+        rhs_scheme = inference(a.rhs, type_env, visited)
+        return object({
+            graph = lhs_scheme.graph | rhs_scheme.graph
+            root = rhs_scheme.root
+        })
     if isinstance(a, Var)
         return replicate(type_env[a.name])
     if isinstance(a, Lit)
         result = Node(+1)
         result.heads.add(a.type)
-        return result
+        return object({
+            graph = set([result])
+            root = result
+        })
     assert false, ["unable to inference", a]
 
-reduce = (node):
+# TODO: This current form of reduction likely destroys the
+#       (a,a) -> bool
+#       annotations. Though the annotation form itself may
+#       be redundant for the type inferencing step.
+reduce = (scheme):
     subsets = {} 
     flow_sets = {}
 
@@ -183,6 +195,12 @@ reduce = (node):
             for label, ws in n.n_transitions.items()
                 for w in ws
                     s.add_transition(label, w)
+            # TODO: Check whether this does what expected.
+            # Retains flow edges into the objects that are not
+            # in the graph.
+            for w in n.flow
+                if w not in scheme.graph
+                    s.add_flow(w)
 
         p_transitions = {}
         for label, ws in s.p_transitions.items()
@@ -196,6 +214,7 @@ reduce = (node):
 
         return s
 
+    node = scheme.root
     root = reduce_subset(node.pol, set([node]))
     for node, s in flow_sets.items()
         continue if node.pol > 0
@@ -203,10 +222,14 @@ reduce = (node):
             ss = flow_sets.get(w)
             if ss
                 s.add_flow(ss)
-    return root
+    
+    return object({
+        graph = set(subsets.values())
+        root = root
+    })
 
-to_raw_type = (node):
-
+to_raw_type = (scheme):
+    flow_variables = greedy_biclique_decomposition(scheme.graph)
     get_raw_type = (node):
         if node.pol > 0
             typedecl = ["+"]
@@ -224,14 +247,55 @@ to_raw_type = (node):
                 "to_raw_type() only works on reduced type forms"
             w = iter(ws).next()
             typedecl.append([label] ++ get_raw_type(w))
+        for v in flow_variables[node]
+            typedecl.append(":" ++ (v + 10).to_string(35))
         return typedecl
-    return get_raw_type(node)
+    return get_raw_type(scheme.root)
 
+greedy_biclique_decomposition = (graph):
+    flow_edges = {}
+    flow_variables = {}
 
+    for node in graph
+        edges = set()
+        for w in node.flow
+            if w in graph
+                edges.add(w)
+        flow_edges[node] = edges
+        flow_variables[node] = []
 
-replicate = (node):
+    var_id = 0
+    best_score = 1
+    while best_score > 0
+        best_biclique = null
+        best_score = 0
+        for node in graph
+            a = flow_edges[node]
+            if a.length == 0 # No biclique here.
+                continue
+            it = iter(a)
+            b = set(flow_edges[it.next()])
+            for w in it
+                b.intersection_update(flow_edges[w])
+            score = a.length * b.length
+            if best_score < score
+                best_score = score
+                best_biclique = [a,b]
+        if best_biclique
+            a,b = best_biclique
+            for n in a
+                flow_variables[n].append(var_id)
+                flow_edges[n].difference_update(b)
+            for n in b
+                flow_variables[n].append(var_id)
+                flow_edges[n].difference_update(a)
+            var_id += 1
+    return flow_variables
+
+replicate = (scheme):
     mapping = {}
     copy_node = (n):
+        return n if n not in scheme.graph
         try
             return mapping[n]
         except KeyError as _
@@ -246,15 +310,17 @@ replicate = (node):
                 for w in ws
                     m.add_transition(label, copy_node(w))
             return m
-    return copy_node(node)
+    return object({
+        graph = set(mapping.values())
+        root = copy_node(scheme.root)
+    })
 
-
-
-
-new_port = ():
+new_port = (graph):
     input = Node(-1)
     output = Node(+1)
     input.add_flow(output)
+    graph.add(input)
+    graph.add(output)
     return (input=input, output=output)
 
 class Node
@@ -329,6 +395,8 @@ biunify = (pair, visited):
 is_subtype = (x, y):
     if x == y
         return true
+    if x == "int" and (y == "(ord)" or y == "(add)")
+        return true
     return false
 
 
@@ -382,6 +450,7 @@ class Def
         self.args = args
         self.body = body
         self.free_vars = free_vars(body)
+        self.free_vars.difference_update(args)
         self.depends = set()
 
         # For tarjan find SCC
@@ -391,6 +460,9 @@ class Def
 
     +repr = (self):
         return repr(["Def", self.name, self.args, self.body])
+
+# TODO: to really test this out 'proper', we also may want
+#       freeform record types & if/then/else
 
 free_vars = (a):
     if isinstance(a, Let)
