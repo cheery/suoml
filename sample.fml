@@ -9,7 +9,10 @@ test2()
     test3(4, 5)
 
 test3(n, m)
-    gt(add(n, m), 3)
+    r = add(n, m)
+    if gt(r, 3)
+    then r
+    else 3
 
 id(a)
     a
@@ -17,3 +20,12 @@ id(a)
 vector_test(y)
     v = vec3(1,y,3)
     add(2, v)
+
+foo(a)
+    get_x(a)
+
+faa(a)
+    add(a, add(a, add(a, a)))
+
+braa(a)
+    get_x(add(a, 2))

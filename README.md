@@ -24,58 +24,84 @@ The resulting system would form coherent set of coercions,
 meaning that different ways to coerce from any one type to
 an another type produce the same result.
 
- [doye]: (http://axiom-wiki.newsynthesis.org/public/refs/doye-aldor-phd.pdf).
+ [doye]: http://axiom-wiki.newsynthesis.org/public/refs/doye-aldor-phd.pdf
 
-Dolan's work presents an ideal base for typing this kind of
-a system. The algorithm presented in the paper supports
-structural coercions as it stands. We end up needing to come
-up a way to represent:
+Dolan's work would appear to be an ideal base for typing this kind of
+a system, yet the main problem of representing coercions remain.
 
- 1. direct embedding coercions
- 2. homomorphisms between types
+The reason why problem persist is that subtyping doesn't
+perfectly convey the idea of coercions. To see why, consider
+the idea below:
 
-I think these properties can be achieved by representing the
-types supporting embedding as "modifier" types that are
-slapped over base coercions. The type signature in MLsub
-system for such object would be of the form:
+    (a + 3).x
+    ----------------------
+    int <: getattr("x", x)
+    a   <: getattr("x", x)
 
-    embedding_type | base_type
+If we went by representing coercions as subtyping
+expressions, we would face the puzzle as above.
 
-In comparison to the non-embedding types that are of the
-form:
+`int` type itself has no way to provide an `.x` -attribute,
+but it could provide that given it gets promoted into a
+vector.
 
-    non_embedding_type(base_type)
+    (3).x
+    ----------------------
+    int <: getattr("x", x)
 
-But this presents a problem. Lets consider simple embedding
-of complex values.
+If we take a different case where the `int` type ends up
+being directly passed to retrieve `.x`, we can see that we
+have a problem here.
 
-It would be trivial to implement an add function in MLsub
-that is able to carry out the following operation, and
-return the associated type.
+The problem is that we cannot assume that there exist only
+one type that `int` can be promoted into, that has `.x`.
 
-    (1 + 3j) : (complex | float)
+We may also decide that the coercion must be speudo-implicit
+and tied to the arithmetic operations. In this case the type
+of addition would be:
 
-The problem is, how do we exctract `real` and `imag` from
-this? We need the corresponding functions.
+    (+) :: g -> g -> b, where g = a & coercible(b, a)
 
-    real :: complex -> ?
-    imag :: complex -> ?
+Now the above expression `(3).x` would correctly present it
+has a type inference problem. Whereas the expression below
+would type:
 
-To achieve this we need to introduce "cancellation".
+    (a + 3).x
+    ------------------------
+    b <: getattr("x", x)
+    a <: coercible(b, a|int)
 
-    real :: complex & (a !! complex) -> a
-    imag :: complex & (a !! complex) -> a
+We could still get into a situation where the program does
+not provide correct type:
 
-With some additional ruling, the embedding coercions could
-stack and form some difficult types, given that those types
-form homomorphisms or otherwise provide themselves a fixed
-order. The following type could resolve for the operation
-taking the real component from a matrix containing complex
-values.
+    (15 + 3).x
+    -----------------------
+    b <: getattr("x", x)
 
-    (float & matrix(2,2) & complex) -> (float | matrix(2,2))
+Although now this happens because the type inference no
+longer concerns over the problems of coercibility.
 
-The goal of this project is to find out how to extend the
-algorithm to support this cancellation operator in the type
-inference, and then verify it forms a system that works as
-expected.
+We may face an another problem if we wanted the types to
+extend over dependently typed concepts such as matrices. For
+matrices the types of addition and multiplication should be:
+
+    (+) :: matrix(a,b) -> matrix(a,b) -> matrix(a,b)
+    (*) :: matrix(a,b) -> matrix(b,c) -> matrix(a,c)
+
+The matrix addition would appear to satisfy the rules we
+have laid. Partially because it's element-wise addition. The
+multiplication in other hand presents a trinary relation for
+us to solve. Eliminating the details of matrices leaves us
+with:
+
+    (*) :: a -> b -> c
+
+We might be able to abstract this out from the expression.
+
+    (*) :: a&g -> b&g -> c where g = rel("*",+a,+b,-c)
+
+This treatment would hoist the unsolvable trinary relations
+into the arguments of the function.
+
+Further experimentation is required to see whether this is a
+feasible approach to solve this problem.

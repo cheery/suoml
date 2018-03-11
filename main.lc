@@ -46,6 +46,9 @@ main = ():
         scheme_r = reduce(scheme)
         print(decl.name, "::", to_raw_type(scheme_r))
 
+# TODO: Create cancellative constraints
+
+
 populate_type_env = (type_env):
     print_t = Node(+1)
     arg_t = Node(-1)
@@ -63,19 +66,34 @@ populate_type_env = (type_env):
     add_t = Node(+1)
     arg_0 = Node(-1)
     arg_1 = Node(-1)
+    res_req = Node(-1)
+    res_co = Node(+1)
     res_t = Node(+1)
     add_t.add_transition(["dom", 0], arg_0)
     add_t.add_transition(["dom", 1], arg_1)
     add_t.add_transition(["cod"], res_t)
     add_t.heads.add("->")
-    arg_0.add_flow(res_t)
-    arg_1.add_flow(res_t)
-    type_env['add'] = object({
-        graph = set([add_t, arg_0, arg_1, res_t])
-        root = add_t
-    })
+
+    for a in [arg_0, arg_1]
+        a.heads.add("coercible")
+        a.add_transition(["req"], res_req)
+        a.add_transition(["coercion"], res_co)
+    arg_0.add_flow(res_co)
+    arg_1.add_flow(res_co)
+    #res_req.add_flow(res_co)
+    res_t.add_flow(res_req)
+
+    vis = set()
+    biunify([res_t, arg_0], vis)
+    biunify([res_t, arg_1], vis)
+
     arg_0.heads.add("(add)")
     arg_1.heads.add("(add)")
+
+    type_env['add'] = object({
+        graph = set([add_t, arg_0, arg_1, res_t, res_co, res_req])
+        root = add_t
+    })
 
     gt_t = Node(+1)
     arg_0 = Node(-1)
@@ -121,6 +139,23 @@ populate_type_env = (type_env):
         graph = set([vec3_t, arg_0, arg_1, arg_2, res_t])
         root = vec3_t
     })
+
+    get_x = Node(+1)
+    arg_0 = Node(-1)
+    res_i = Node(-1)
+    res_t = Node(+1)
+    arg_0.heads.add("get_x")
+    arg_0.add_transition([".x"], res_i)
+    get_x.heads.add("->")
+    get_x.add_transition(["dom", 0], arg_0)
+    get_x.add_transition(["cod"], res_t)
+    res_t.add_flow(res_i)
+    
+    type_env['get_x'] = object({
+        graph = set([arg_0, res_t, get_x, res_i])
+        root = get_x
+    })
+
 
 
 # TODO: This may be doing really silly things by
@@ -176,12 +211,12 @@ inference = (a, type_env, visited):
         boolean = Node(-1)
         boolean.heads.add("bool")
         graph.add(boolean)
-        biunify([cond, boolean], visited)
+        biunify([cond.root, boolean], visited)
         t = inference(a.t, type_env, visited)
         f = inference(a.f, type_env, visited)
         result = new_port(graph)
-        biunify([t, result.input], visited)
-        biunify([f, result.input], visited)
+        biunify([t.root, result.input], visited)
+        biunify([f.root, result.input], visited)
         return object({
             graph = graph | cond.graph | t.graph | f.graph
             root = result.output
@@ -189,7 +224,13 @@ inference = (a, type_env, visited):
     if isinstance(a, Let)
         lhs_scheme = inference(a.lhs, type_env, visited)
         type_env = dict(type_env)
-        type_env[a.name] = generalize(lhs_scheme)
+        # TODO: Removed the 'generalize' from here because it may
+        #       produce a problem with transitions where the source
+        #       is outside the graph, but the dst is inside the graph.
+        type_env[a.name] = object({
+            graph = set([])
+            root = lhs_scheme.root
+        })
         rhs_scheme = inference(a.rhs, type_env, visited)
         return object({
             graph = lhs_scheme.graph | rhs_scheme.graph
@@ -210,6 +251,9 @@ inference = (a, type_env, visited):
 # very different purpose which makes it reasonable to
 # have them apart.
 generalize = (scheme):
+    # TODO: All elements either have to be in the scheme.graph,
+    #       or then the scheme.graph must be empty.
+    #       Look up into inference of 'Let' to find out why.
     subsets = {} 
     flow_sets = {}
 
@@ -285,7 +329,7 @@ reduce = (scheme):
         for n in subset
             s.heads.update(n.heads)
             try
-                flow_sets[n].add(s)
+                flow_sets[n].append(s)
             except KeyError as _
                 flow_sets[n] = [s]
             for label, ws in n.p_transitions.items()
@@ -350,7 +394,18 @@ reduce = (scheme):
 
 to_raw_type = (scheme):
     flow_variables = greedy_biclique_decomposition(scheme.graph)
+    visi = set()
+    mapi = {}
+    r = 0
+
     get_raw_type = (node):
+        if node in visi
+            sym = "rec." ++ (r + 10).to_string(35)
+            mapi[node] = "let." ++ sym
+            r += 1
+            return [sym]
+        visi.add(node)
+        # Resolve recursion somehow.
         if node.pol > 0
             typedecl = ["+"]
         else
@@ -369,6 +424,10 @@ to_raw_type = (scheme):
             typedecl.append([label] ++ get_raw_type(w))
         for v in flow_variables[node]
             typedecl.append(":" ++ (v + 10).to_string(35))
+
+        if node in mapi
+            typedecl.append(mapi.pop(node))
+        visi.discard(node)
         return typedecl
     return get_raw_type(scheme.root)
 
@@ -519,6 +578,17 @@ is_subtype = (x, y):
         return true
     if x == "vec" and y in vec_traits
         return true
+    # TODO: it may be a good idea to devise some rules in order to make
+    #       the coercions close under some conditions.
+    if x == "int" and y == "coercible"
+        return true
+    if x == "vec" and y == "coercible"
+        return true
+    # TODO: Anything is probably coercible with itself.
+
+    # The coercion collects these traits into 'req'
+    #if x == "coercion" and y in traits
+    #    return true
     return false
 
 int_traits = set([
@@ -526,6 +596,10 @@ int_traits = set([
 ])
 vec_traits = set([
     "(add)"
+])
+
+traits = set([
+    "(ord)", "(add)", "(vec)"
 ])
 
 
