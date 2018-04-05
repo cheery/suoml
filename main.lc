@@ -2,13 +2,19 @@ import grammar
 
 language = grammar.read_file("suoml.grammar")
 
+#TODO: add proper trait methods for operations that appear here.
+#TODO: try the strict trait methods first.
+#TODO: add the compositive type system.
+#TODO: improve type printing
+#TODO: implement the SCC + copy solver -thing.
+#TODO: implement the fix-point on recursion.
+
 main = ():
     parse = language.read_file("sample.fml")
     decls = parse.traverse((rule, args, loc):
         return getattr(actions, rule)(args...))
 
-    type_env = {}
-    populate_type_env(type_env)
+    type_env = populated_type_env()
 
     # Assuming that the subtyping algorithm is going to require a similar
     # treatment as the Algorithm W in order to handle recursive clauses
@@ -41,64 +47,97 @@ main = ():
 
         decl = group.pop()
         scheme = inference(Abs(decl.args, decl.body), type_env, visited)
-        type_env[decl.name] = generalize(scheme)
+        type_env[decl.name] = scheme_g = generalize(scheme.root, type_env)
 
-        scheme_r = reduce(scheme)
-        print(decl.name, "::", to_raw_type(scheme_r))
+        print(decl.name, "::", to_raw_type(scheme_g))
 
-# TODO: Create cancellative constraints
+# THE STRUCTURE OF TYPE ENV
+# parent  : type_env
+# free    : set(Node)
+#   The set of nodes that are free in this type env.
+#   Nodes must be removed from this env if they become free in parent.
+# binding : {generic: set(Node), root: Node}
+#   'generic' are generic parts of the binding. They *must* not be reachable
+#   from any 'free' set.
+#   'root' is the root node of the type.
+class TypeEnv
+    +init = (self, parent=null, free=set(), binding={}):
+        self.parent = parent
+        self.free = free
+        self.binding = binding
 
+    +iter = (self):
+        if self.parent
+            out = list(self.parent)
+            out.extend(self.binding.keys())
+            return iter(out)
+        else
+            return self.binding.keys()
 
-populate_type_env = (type_env):
+    +contains = (self, name):
+        if name in self.binding
+            return true
+        if self.parent
+            return name in self.parent
+        return false
+
+    +getitem = (self, name):
+        try
+            obj = self.binding[name]
+            return obj
+        except KeyError as ke
+            raise ke if not self.parent
+            return self.parent[name]
+
+    +setitem = (self, name, value):
+        self.binding[name] = value
+
+# TODO: Many of these typings here are likely wrong for subtyping.
+populated_type_env = ():
+    type_env = TypeEnv()
+
+    # (string) -> unit
     print_t = Node(+1)
     arg_t = Node(-1)
     arg_t.heads.add("string")
-    print_t.add_transition(["dom", 0], arg_t)
     result_t = Node(+1)
     result_t.heads.add("unit")
+
+    print_t.add_transition(["dom", 0], arg_t)
     print_t.add_transition(["cod"], result_t)
     print_t.heads.add("->")
-    type_env['print'] = object({
-        graph = set([print_t, arg_t, result_t])
-        root = print_t
-    })
+
+    type_env['print'] = generalize(print_t, type_env)
 
     add_t = Node(+1)
     arg_0 = Node(-1)
     arg_1 = Node(-1)
-    res_req = Node(-1)
-    res_co = Node(+1)
     res_t = Node(+1)
+
+    # Creating the relation
+    a = Node(+1)
+    b = Node(+1)
+    c = Node(-1)
+    a.add_flow(arg_0)
+    b.add_flow(arg_1)
+    c.add_flow(res_t)
+
+    for a in [arg_0, arg_1]
+        a.heads.add("rel")
+        a.add_transition(["(+)", 0], a)
+        a.add_transition(["(+)", 1], b)
+        a.add_transition(["(+)", 2], c)
+
     add_t.add_transition(["dom", 0], arg_0)
     add_t.add_transition(["dom", 1], arg_1)
     add_t.add_transition(["cod"], res_t)
     add_t.heads.add("->")
 
-    for a in [arg_0, arg_1]
-        a.heads.add("coercible")
-        a.add_transition(["req"], res_req)
-        a.add_transition(["coercion"], res_co)
-    arg_0.add_flow(res_co)
-    arg_1.add_flow(res_co)
-    #res_req.add_flow(res_co)
-    res_t.add_flow(res_req)
-
-    vis = set()
-    biunify([res_t, arg_0], vis)
-    biunify([res_t, arg_1], vis)
-
-    arg_0.heads.add("(add)")
-    arg_1.heads.add("(add)")
-
-    type_env['add'] = object({
-        graph = set([add_t, arg_0, arg_1, res_t, res_co, res_req])
-        root = add_t
-    })
+    type_env['add'] = generalize(add_t, type_env)
 
     gt_t = Node(+1)
     arg_0 = Node(-1)
     arg_1 = Node(-1)
-    comb_t = Node(+1)
     res_t = Node(+1)
     res_t.heads.add("bool")
     gt_t.add_transition(["dom", 0], arg_0)
@@ -107,16 +146,7 @@ populate_type_env = (type_env):
     gt_t.heads.add("->")
     arg_0.heads.add("(ord)")
     arg_1.heads.add("(ord)")
-    # TODO: There won't happen additional checks when we add this
-    #       in. Therefore this is 'redundant' information except
-    #       for the user, and for the subsequent compiler step
-    #       that has to select an implementation for the function.
-    comb_t.add_flow(arg_0)
-    comb_t.add_flow(arg_1)
-    type_env['gt'] = object({
-        graph = set([gt_t, arg_0, arg_1, res_t, comb_t])
-        root = gt_t
-    })
+    type_env['gt'] = generalize(gt_t, type_env)
 
     vec3_t = Node(+1)
     arg_0 = Node(-1)
@@ -135,10 +165,7 @@ populate_type_env = (type_env):
     res_t.add_flow(arg_0)
     res_t.add_flow(arg_1)
     res_t.add_flow(arg_2)
-    type_env['vec3'] = object({
-        graph = set([vec3_t, arg_0, arg_1, arg_2, res_t])
-        root = vec3_t
-    })
+    type_env['vec3'] = generalize(vec3_t, type_env)
 
     get_x = Node(+1)
     arg_0 = Node(-1)
@@ -150,141 +177,156 @@ populate_type_env = (type_env):
     get_x.add_transition(["dom", 0], arg_0)
     get_x.add_transition(["cod"], res_t)
     res_t.add_flow(res_i)
-    
-    type_env['get_x'] = object({
-        graph = set([arg_0, res_t, get_x, res_i])
-        root = get_x
-    })
+    type_env['get_x'] = generalize(get_x, type_env)
+
+    return type_env
 
 
-
-# TODO: This may be doing really silly things by
-#       generalizing every use of a variable.
 inference = (a, type_env, visited):
     if isinstance(a, Abs)
-        graph = set()
-        type_env = dict(type_env)
+        type_env = TypeEnv(type_env)
+
         ports = []
         for arg in a.args
-            port = new_port(graph)
+            port = new_port(type_env.free)
             ports.append(port)
-            type_env[arg] = object({
-                graph = set()
-                root = port.output
-            })
+            type_env[arg] = (generic = set(), root = port.output)
         result = inference(a.body, type_env, visited)
-        graph.update(result.graph)
+
         functype = Node(+1)
         for i in range(ports.length)
             functype.add_transition(
                 ["dom", i], ports[i].input)
         functype.add_transition(["cod"], result.root)
         functype.heads.add("->")
-        return object({
-            graph = graph
-            root = functype
-        })
-    if isinstance(a, App)
-        graph = set()
 
+        # TODO: When the 'abs' finishes, we should check the relations
+        #       that ended up unreachable from functype and solve them.
+
+        return (root=functype)
+
+    if isinstance(a, App)
         lhs_scheme = inference(a.lhs, type_env, visited)
-        graph.update(lhs_scheme.graph)
+
         calltype = Node(-1)
         calltype.heads.add("->")
         i = 0
         for arg in a.args
             arg_scheme = inference(arg, type_env, visited)
             calltype.add_transition(["dom", i], arg_scheme.root)
-            graph.update(arg_scheme.graph)
             i += 1
-        result = new_port(graph)
+        result = new_port()
         calltype.add_transition(
             ["cod"], result.input)
         biunify([lhs_scheme.root, calltype], visited)
-        return object({
-            graph = graph
-            root = result.output
-        })
+        return (root=result.output)
+
     if isinstance(a, IfThenElse)
-        graph = set()
         cond = inference(a.cond, type_env, visited)
+
         boolean = Node(-1)
         boolean.heads.add("bool")
-        graph.add(boolean)
         biunify([cond.root, boolean], visited)
         t = inference(a.t, type_env, visited)
         f = inference(a.f, type_env, visited)
-        result = new_port(graph)
+
+        result = new_port()
         biunify([t.root, result.input], visited)
         biunify([f.root, result.input], visited)
-        return object({
-            graph = graph | cond.graph | t.graph | f.graph
-            root = result.output
-        })
+
+        return (root=result.output)
+
     if isinstance(a, Let)
         lhs_scheme = inference(a.lhs, type_env, visited)
-        type_env = dict(type_env)
-        # TODO: Removed the 'generalize' from here because it may
-        #       produce a problem with transitions where the source
-        #       is outside the graph, but the dst is inside the graph.
-        type_env[a.name] = object({
-            graph = set([])
-            root = lhs_scheme.root
-        })
+
+        type_env = TypeEnv(type_env)
+        type_env[a.name] = generalize(lhs_scheme.root, type_env)
         rhs_scheme = inference(a.rhs, type_env, visited)
-        return object({
-            graph = lhs_scheme.graph | rhs_scheme.graph
-            root = rhs_scheme.root
-        })
+
+        return (root=rhs_scheme.root)
+
     if isinstance(a, Var)
-        return replicate(type_env[a.name])
+        root = instantiate_type(type_env[a.name])
+        return (root=root)
+
     if isinstance(a, Lit)
         result = Node(+1)
         result.heads.add(a.type)
-        return object({
-            graph = set([result])
-            root = result
-        })
+        return (root=result)
+
     assert false, ["unable to inference", a]
 
-# Reduce and generalize are similar, but each serve
-# very different purpose which makes it reasonable to
-# have them apart.
-generalize = (scheme):
-    # TODO: All elements either have to be in the scheme.graph,
-    #       or then the scheme.graph must be empty.
-    #       Look up into inference of 'Let' to find out why.
-    subsets = {} 
-    flow_sets = {}
+
+# The generalize recalculates the 'free' node sets in the environment by
+# extending it. Then it runs a subset construction that takes everything
+# not in 'free' and constructs a new graph. 'generic' ends up labeling the
+# nodes present in this new sub-graph.
+generalize = (root, type_env):
+
+    recalculate_free = (type_env):
+        if type_env.parent
+            free = recalculate_free(type_env.parent)
+            # Nodes free in parent do not need to appear in free set
+            type_env.free.difference_update(free)
+        else
+            free = set()
+
+        visit = (n):
+            if n not in free
+                type_env.free.add(n)
+        for node in type_env.free
+            for w in node.flow
+                visit(w)
+            for label, ws in node.p_transitions.items()
+                for w in ws
+                    visit(w)
+            for label, ws in node.n_transitions.items()
+                for w in ws
+                    visit(w)
+
+        free.update(type_env.free)
+        return free
+
+    free = recalculate_free(type_env)
+
+    if root in free
+        return (generic=set(), root=root)
+
+    # subsets : {set(Node) : Node}
+    # membership : {Node : set(Node)}
+    subsets = {}
+    membership = {}
 
     reduce_subset = (pol, subset):
         if subset in subsets
             return subsets[subset]
         subsets[subset] = s = Node(pol)
         for n in subset
+            assert n not in free, "bug: subset must not contain free nodes"
             s.heads.update(n.heads)
             try
-                flow_sets[n].add(s)
+                membership[n].append(s)
             except KeyError as _
-                flow_sets[n] = [s]
+                membership[n] = [s]
             for label, ws in n.p_transitions.items()
                 for w in ws
                     s.add_transition(label, w)
             for label, ws in n.n_transitions.items()
                 for w in ws
                     s.add_transition(label, w)
+
             # TODO: Check whether this does what expected.
             # Retains flow edges into the objects that are not
             # in the graph.
             for w in n.flow
-                if w not in scheme.graph
+                if w not in free
                     s.add_flow(w)
 
         p_transitions = {}
         for label, ws in s.p_transitions.items()
             extern = set()
             for w in ws
-                if w not in scheme.graph
+                if w in free
                     extern.add(w)
             ws.difference_update(extern)
             p_transitions[label] = set([reduce_subset(pol, ws)]) | extern
@@ -294,7 +336,7 @@ generalize = (scheme):
         for label, ws in s.n_transitions.items()
             extern = set()
             for w in ws
-                if w not in scheme.graph
+                if w in free
                     extern.add(w)
             ws.difference_update(extern)
             n_transitions[label] = set([reduce_subset(-pol, ws)]) | extern
@@ -302,98 +344,26 @@ generalize = (scheme):
 
         return s
 
-    node = scheme.root
-    root = reduce_subset(node.pol, set([node]))
-    for node, ss in flow_sets.items()
+    root = reduce_subset(root.pol, set([root]))
+    for node, ss in membership.items()
         continue if node.pol > 0
         for w in node.flow
-            qq = flow_sets.get(w, [])
+            assert w not in free, "bug: free node that is not marked free"
+            qq = membership.get(w, [])
             for s in ss
                 for q in qq
                     s.add_flow(q)
+    return (generic=set(subsets.values()), root=root)
     
-    return object({
-        graph = set(subsets.values())
-        root = root
-    })
+
+# Remember that for subtyping, type variables represent flows.
+# This means that only-covariant or only-contravariant type variables
+# do not really convey useful information.
 
 
-reduce = (scheme):
-    subsets = {} 
-    flow_sets = {}
-
-    reduce_subset = (pol, subset):
-        if subset in subsets
-            return subsets[subset]
-        subsets[subset] = s = Node(pol)
-        for n in subset
-            s.heads.update(n.heads)
-            try
-                flow_sets[n].append(s)
-            except KeyError as _
-                flow_sets[n] = [s]
-            for label, ws in n.p_transitions.items()
-                for w in ws
-                    s.add_transition(label, w)
-            for label, ws in n.n_transitions.items()
-                for w in ws
-                    s.add_transition(label, w)
-
-        p_transitions = {}
-        for label, ws in s.p_transitions.items()
-            p_transitions[label] = set([reduce_subset(pol, ws)])
-        s.p_transitions = p_transitions
-
-        n_transitions = {}
-        for label, ws in s.n_transitions.items()
-            n_transitions[label] = set([reduce_subset(-pol, ws)])
-        s.n_transitions = n_transitions
-
-        return s
-
-    stubs = set()
-
-    node = scheme.root
-    root = reduce_subset(node.pol, set([node]))
-    for node, ss in flow_sets.items()
-        continue if node.pol > 0
-        for w in node.flow
-            qq = flow_sets.get(w)
-            if not qq
-                stubs.add(w)
-            else
-                for s in ss
-                    for q in qq
-                        s.add_flow(q)
-
-    # The 'reduce' is called in order to print the type. The person
-    # reading the type is interested also in how the types relate to
-    # each other, in which case we want to know flow information that
-    # would not be important for the type inference.
-    extra_groups = set()
-    for stub in stubs
-        x = stub.flow.intersection(flow_sets.keys())
-        continue if x.length < 2
-        extra_groups.add([stub.pol, x])
-
-    # The size of extras here could be further reduced by
-    # being clever, but not certain whether extra cleverness here
-    # will help. TODO: check it out in practice
-    extras = set()
-    for pol, x in extra_groups
-        w = Node(pol)
-        for n in x
-            for q in flow_sets[n]
-                w.add_flow(q)
-        extras.add(w)
-
-    return object({
-        graph = set(subsets.values()) | extras
-        root = root
-    })
-
+# TODO: improve to handle 'free' variables in env?
 to_raw_type = (scheme):
-    flow_variables = greedy_biclique_decomposition(scheme.graph)
+    flow_variables = greedy_biclique_decomposition(scheme.generic)
     visi = set()
     mapi = {}
     r = 0
@@ -414,14 +384,15 @@ to_raw_type = (scheme):
             typedecl.append(head)
         for label, ws in node.p_transitions.items()
             assert ws.length == 1
-                "to_raw_type() only works on reduced type forms"
+                "to_raw_type() only works on reduced type forms without free nodes in them"
             w = iter(ws).next()
             typedecl.append([label] ++ get_raw_type(w))
         for label, ws in node.n_transitions.items()
             assert ws.length == 1
-                "to_raw_type() only works on reduced type forms"
+                "to_raw_type() only works on reduced type forms without free nodes in them"
             w = iter(ws).next()
             typedecl.append([label] ++ get_raw_type(w))
+
         for v in flow_variables[node]
             typedecl.append(":" ++ (v + 10).to_string(35))
 
@@ -471,10 +442,11 @@ greedy_biclique_decomposition = (graph):
             var_id += 1
     return flow_variables
 
-replicate = (scheme):
+# Instantiates a typing scheme that was generalized.
+instantiate_type = (scheme):
     mapping = {}
     copy_node = (n):
-        return n if n not in scheme.graph
+        return n if n not in scheme.generic
         try
             return mapping[n]
         except KeyError as _
@@ -489,17 +461,16 @@ replicate = (scheme):
                 for w in ws
                     m.add_transition(label, copy_node(w))
             return m
-    return object({
-        graph = set(mapping.values())
-        root = copy_node(scheme.root)
-    })
+    return copy_node(scheme.root)
 
-new_port = (graph):
+# A small helper function.
+new_port = (graph=null):
     input = Node(-1)
     output = Node(+1)
     input.add_flow(output)
-    graph.add(input)
-    graph.add(output)
+    if graph
+        graph.add(input)
+        graph.add(output)
     return (input=input, output=output)
 
 class Node
@@ -571,6 +542,9 @@ biunify = (pair, visited):
             for s in ss
                 biunify([u,s], visited)
 
+# TODO: it is not practical to list all trait edges for the positive
+#       types. The 'biunify' needs a function that infers the missing
+#       subtype transitions when they're needed.
 is_subtype = (x, y):
     if x == y
         return true
@@ -579,10 +553,10 @@ is_subtype = (x, y):
     if x == "vec" and y in vec_traits
         return true
     # TODO: it may be a good idea to devise some rules in order to make
-    #       the coercions close under some conditions.
-    if x == "int" and y == "coercible"
+    #       the coercions (or relations) close under some conditions.
+    if x == "int" and y == "rel"
         return true
-    if x == "vec" and y == "coercible"
+    if x == "vec" and y == "rel"
         return true
     # TODO: Anything is probably coercible with itself.
 
@@ -602,6 +576,9 @@ traits = set([
     "(ord)", "(add)", "(vec)"
 ])
 
+
+# TODO: The tarjan SCC is also required for solving a problem with
+#       type indeterminates.
 
 # The SCC finding is likely necessary for handling recursion.
 # For now we use it to detect recursion so it fails before causing issues.
