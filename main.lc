@@ -38,18 +38,35 @@ main = ():
         print(name, "::", to_raw_type(type_env[name]))
 
     for group in out
-        if group.length != 1
-            print("Error: not ready for recursive definitions yet")
-            print("SCC detected:")
+        if group.length == 1
+            decl = iter(group).next()
+            recursive = decl in decl.depends
+        else
+            recursive = true
+
+        if recursive
+            sub_env = TypeEnv(type_env)
+            ports = {}
             for decl in group
-                print(" ", decl)
-            exit(1)
+                ports[decl.name] = port = new_port(sub_env.free)
+                sub_env[decl.name] = generalize(port.output, sub_env)
 
-        decl = group.pop()
-        scheme = inference(Abs(decl.args, decl.body), type_env, visited)
-        type_env[decl.name] = scheme_g = generalize(scheme.root, type_env)
+            for decl in group
+                port = ports[decl.name]
+                scheme = inference(Abs(decl.args, decl.body), sub_env, visited)
+                biunify([scheme.root, port.input], visited)
 
-        print(decl.name, "::", to_raw_type(scheme_g))
+            for decl in group
+                port = ports[decl.name]
+                type_env[decl.name] = scheme_g = generalize(port.output, type_env)
+                print(decl.name, "::", to_raw_type(scheme_g))
+
+        else
+            decl = group.pop()
+            scheme = inference(Abs(decl.args, decl.body), type_env, visited)
+            type_env[decl.name] = scheme_g = generalize(scheme.root, type_env)
+
+            print(decl.name, "::", to_raw_type(scheme_g))
 
 # THE STRUCTURE OF TYPE ENV
 # parent  : type_env
@@ -135,6 +152,32 @@ populated_type_env = ():
 
     type_env['add'] = generalize(add_t, type_env)
 
+    sub_t = Node(+1)
+    arg_0 = Node(-1)
+    arg_1 = Node(-1)
+    res_t = Node(+1)
+
+    # Creating the relation
+    a = Node(+1)
+    b = Node(+1)
+    c = Node(-1)
+    a.add_flow(arg_0)
+    b.add_flow(arg_1)
+    c.add_flow(res_t)
+
+    for a in [arg_0, arg_1]
+        a.heads.add("rel")
+        a.add_transition(["(+)", 0], a)
+        a.add_transition(["(+)", 1], b)
+        a.add_transition(["(+)", 2], c)
+
+    sub_t.add_transition(["dom", 0], arg_0)
+    sub_t.add_transition(["dom", 1], arg_1)
+    sub_t.add_transition(["cod"], res_t)
+    sub_t.heads.add("->")
+
+    type_env['sub'] = generalize(sub_t, type_env)
+
     gt_t = Node(+1)
     arg_0 = Node(-1)
     arg_1 = Node(-1)
@@ -199,6 +242,9 @@ inference = (a, type_env, visited):
                 ["dom", i], ports[i].input)
         functype.add_transition(["cod"], result.root)
         functype.heads.add("->")
+
+        # TODO: The recalculate_free needs to be called here, so we know
+        #       which relations can be resolved now.
 
         # TODO: When the 'abs' finishes, we should check the relations
         #       that ended up unreachable from functype and solve them.
