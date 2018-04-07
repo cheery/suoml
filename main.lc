@@ -7,7 +7,6 @@ language = grammar.read_file("suoml.grammar")
 #TODO: add the compositive type system.
 #TODO: improve type printing
 #TODO: implement the SCC + copy solver -thing.
-#TODO: implement the fix-point on recursion.
 
 main = ():
     parse = language.read_file("sample.fml")
@@ -46,16 +45,22 @@ main = ():
 
         if recursive
             sub_env = TypeEnv(type_env)
+            # First creating a scope with blank variables for each declaration.
             ports = {}
             for decl in group
                 ports[decl.name] = port = new_port(sub_env.free)
                 sub_env[decl.name] = generalize(port.output, sub_env)
 
+            # Next doing the type inference as usual, in the subscope.
+            # The biunification associates the signature with
+            # the previously blank variable.
             for decl in group
                 port = ports[decl.name]
                 scheme = inference(Abs(decl.args, decl.body), sub_env, visited)
                 biunify([scheme.root, port.input], visited)
 
+            # Finally the variables are properly generalized to yield the
+            # polymorphic types for declarations.
             for decl in group
                 port = ports[decl.name]
                 type_env[decl.name] = scheme_g = generalize(port.output, type_env)
