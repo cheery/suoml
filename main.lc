@@ -5,7 +5,6 @@ language = grammar.read_file("suoml.grammar")
 #TODO: add proper trait methods for operations that appear here.
 #TODO: try the strict trait methods first.
 #TODO: add the compositive type system.
-#TODO: improve type printing
 #TODO: implement the SCC + copy solver -thing.
 
 main = ():
@@ -15,7 +14,7 @@ main = ():
 
     type_env = populated_type_env()
 
-    # Assuming that the subtyping algorithm is going to require a similar
+    # The subtyping algorithm requires a similar
     # treatment as the Algorithm W in order to handle recursive clauses
     # correctly. Therefore this builds the dependency graph so that the
     # SCC algorithm then sort the expressions out.
@@ -37,6 +36,8 @@ main = ():
         print(name, "::", to_raw_type(type_env[name]))
 
     for group in out
+        assert type_env.relations.length == 0
+            "bug: unclosed relations"
         if group.length == 1
             decl = iter(group).next()
             recursive = decl in decl.depends
@@ -87,6 +88,10 @@ class TypeEnv
         self.parent = parent
         self.free = free
         self.binding = binding
+        if parent
+            self.relations = parent.relations
+        else
+            self.relations = set()
 
     +iter = (self):
         if self.parent
@@ -131,58 +136,67 @@ populated_type_env = ():
 
     type_env['print'] = generalize(print_t, type_env)
 
+    # New-style relational 'add'
+    rel_t = Node(-1)
+    lhs_t = Node(+1)
+    rhs_t = Node(+1)
+    out_t = Node(-1)
+    rel_t.add_transition(["dom", 0], lhs_t)
+    rel_t.add_transition(["dom", 1], rhs_t)
+    rel_t.add_transition(["cod"],    out_t)
+    rel_t.heads.add("rel")
+
     add_t = Node(+1)
     arg_0 = Node(-1)
     arg_1 = Node(-1)
     res_t = Node(+1)
-
-    # Creating the relation
-    a = Node(+1)
-    b = Node(+1)
-    c = Node(-1)
-    a.add_flow(arg_0)
-    b.add_flow(arg_1)
-    c.add_flow(res_t)
-
-    for a in [arg_0, arg_1]
-        a.heads.add("rel")
-        a.add_transition(["(+)", 0], a)
-        a.add_transition(["(+)", 1], b)
-        a.add_transition(["(+)", 2], c)
-
     add_t.add_transition(["dom", 0], arg_0)
     add_t.add_transition(["dom", 1], arg_1)
     add_t.add_transition(["cod"], res_t)
     add_t.heads.add("->")
 
+    arg_0.add_flow(lhs_t)
+    arg_1.add_flow(rhs_t)
+    out_t.add_flow(res_t)
+
+    arg_0.add_transition(["add"], rel_t)
+    arg_0.heads.add("add")
+    arg_1.add_transition(["add"], rel_t)
+    arg_1.heads.add("add")
     type_env['add'] = generalize(add_t, type_env)
+
+
+    # New-style relational 'sub'
+    rel_t = Node(-1)
+    lhs_t = Node(+1)
+    rhs_t = Node(+1)
+    out_t = Node(-1)
+    rel_t.add_transition(["dom", 0], lhs_t)
+    rel_t.add_transition(["dom", 1], rhs_t)
+    rel_t.add_transition(["cod"],    out_t)
+    rel_t.heads.add("rel")
 
     sub_t = Node(+1)
     arg_0 = Node(-1)
     arg_1 = Node(-1)
     res_t = Node(+1)
-
-    # Creating the relation
-    a = Node(+1)
-    b = Node(+1)
-    c = Node(-1)
-    a.add_flow(arg_0)
-    b.add_flow(arg_1)
-    c.add_flow(res_t)
-
-    for a in [arg_0, arg_1]
-        a.heads.add("rel")
-        a.add_transition(["(+)", 0], a)
-        a.add_transition(["(+)", 1], b)
-        a.add_transition(["(+)", 2], c)
-
     sub_t.add_transition(["dom", 0], arg_0)
     sub_t.add_transition(["dom", 1], arg_1)
     sub_t.add_transition(["cod"], res_t)
     sub_t.heads.add("->")
 
+    arg_0.add_flow(lhs_t)
+    arg_1.add_flow(rhs_t)
+    out_t.add_flow(res_t)
+
+    arg_0.add_transition(["sub"], rel_t)
+    arg_0.heads.add("sub")
+    arg_1.add_transition(["sub"], rel_t)
+    arg_1.heads.add("sub")
     type_env['sub'] = generalize(sub_t, type_env)
 
+
+    # gt still needs some thought.
     gt_t = Node(+1)
     arg_0 = Node(-1)
     arg_1 = Node(-1)
@@ -192,10 +206,11 @@ populated_type_env = ():
     gt_t.add_transition(["dom", 1], arg_1)
     gt_t.add_transition(["cod"], res_t)
     gt_t.heads.add("->")
-    arg_0.heads.add("(ord)")
-    arg_1.heads.add("(ord)")
+    arg_0.heads.add("ord")
+    arg_1.heads.add("ord")
     type_env['gt'] = generalize(gt_t, type_env)
 
+    # This seems wrong as well.. Vector has no parameter.
     vec3_t = Node(+1)
     arg_0 = Node(-1)
     arg_1 = Node(-1)
@@ -207,12 +222,9 @@ populated_type_env = ():
     vec3_t.add_transition(["dom", 2], arg_2)
     vec3_t.add_transition(["cod"], res_t)
     vec3_t.heads.add("->")
-    arg_0.heads.add("(vec)")
-    arg_1.heads.add("(vec)")
-    arg_2.heads.add("(vec)")
-    res_t.add_flow(arg_0)
-    res_t.add_flow(arg_1)
-    res_t.add_flow(arg_2)
+    arg_0.heads.add("vec_carry")
+    arg_1.heads.add("vec_carry")
+    arg_2.heads.add("vec_carry")
     type_env['vec3'] = generalize(vec3_t, type_env)
 
     get_x = Node(+1)
@@ -297,7 +309,7 @@ inference = (a, type_env, visited):
         return (root=rhs_scheme.root)
 
     if isinstance(a, Var)
-        root = instantiate_type(type_env[a.name])
+        root = instantiate_type(type_env[a.name], type_env.relations)
         return (root=root)
 
     if isinstance(a, Lit)
@@ -342,6 +354,32 @@ generalize = (root, type_env):
 
     if root in free
         return (generic=set(), root=root)
+
+    relations = set()
+    for rel in type_env.relations
+        if rel not in free
+            relations.add(rel)
+
+    visited = set()
+    discard_generic_relations = (node):
+        return null if node in visited or node in free
+        visited.add(node)
+        if "rel" in node.heads
+            relations.discard(node)
+            type_env.relations.discard(node)
+        for label, ws in node.p_transitions.items()
+            for w in ws
+                discard_generic_relations(w)
+        for label, ws in node.n_transitions.items()
+            for w in ws
+                discard_generic_relations(w)
+    discard_generic_relations(root)
+
+    type_env.relations.difference_update(relations)
+
+    # TODO: test closing of relations.
+    #print("can close", relations.length, "relations")
+
 
     # subsets : {set(Node) : Node}
     # membership : {Node : set(Node)}
@@ -419,6 +457,8 @@ to_raw_type = (scheme):
     mapi = {}
     r = 0
 
+    rel_table = set()
+
     get_raw_type = (node):
         if node in visi
             sym = "rec." ++ (r + 10).to_string(35)
@@ -428,30 +468,69 @@ to_raw_type = (scheme):
         visi.add(node)
         # Resolve recursion somehow.
         if node.pol > 0
-            typedecl = ["+"]
+            operator = " | "
         else
-            typedecl = ["-"]
+            operator = " & "
+
+        typedecl = []
         for head in node.heads
-            typedecl.append(head)
-        for label, ws in node.p_transitions.items()
-            assert ws.length == 1
-                "to_raw_type() only works on reduced type forms without free nodes in them"
-            w = iter(ws).next()
-            typedecl.append([label] ++ get_raw_type(w))
-        for label, ws in node.n_transitions.items()
-            assert ws.length == 1
-                "to_raw_type() only works on reduced type forms without free nodes in them"
-            w = iter(ws).next()
-            typedecl.append([label] ++ get_raw_type(w))
+            if head in ["add", "sub"]
+                for w in node.p_transitions[[head]]
+                    rel_table.add([head.split(':')[0], w])
+            else
+                typedecl.append(construct_type_repr(head, node, get_p, get_n))
 
         for v in flow_variables[node]
-            typedecl.append(":" ++ (v + 10).to_string(35))
+            typedecl.append((v + 10).to_string(35))
 
         if node in mapi
-            typedecl.append(mapi.pop(node))
+            typedecl.insert(0, mapi.pop(node))
         visi.discard(node)
-        return typedecl
-    return get_raw_type(scheme.root)
+        return "(" ++ operator.join(typedecl) ++ ")"
+    get_p = (node, label):
+        ws = node.p_transitions[label]
+        assert ws.length == 1
+            "to_raw_type() only works on reduced type forms without free nodes in them"
+        w = iter(ws).next()
+        return get_raw_type(w)
+    get_n = (node, label):
+        ws = node.n_transitions[label]
+        assert ws.length == 1
+            "to_raw_type() only works on reduced type forms without free nodes in them"
+        w = iter(ws).next()
+        return get_raw_type(w)
+
+    s = get_raw_type(scheme.root)
+    l = [s]
+    for name, node in rel_table
+        s = name ++ functype_cons(node, get_p, get_n)
+        l.append(s)
+    return "\n  ".join(l)
+
+construct_type_repr = (head, node, get_p, get_n):
+    if head == "->" # TODO: We need the arity here.
+        return functype_cons(node, get_p, get_n)
+    if head == "rel"
+        return "%rel" ++ functype_cons(node, get_p, get_n)
+    if head == "get_x"
+        args = [ get_p(node, [".x"]) ]
+        return "get_x(" ++ ", ".join(args) ++ ")"
+
+    if head in ["string", "int", "unit", "ord", "bool", "vec", "vec_carry"]
+        return head ++ "()"
+
+    assert false, ["bug: missing type repr", head]
+
+functype_cons = (node, get_p, get_n):
+        arity = 0
+        for label in node.n_transitions
+            if label[0] == "dom"
+                arity = max(arity, label[1]+1)
+        args = []
+        for k in range(arity)
+            args.append( get_n(node, ["dom", k]) )
+        res = get_p(node, ["cod"])
+        return "(" ++ "(" ++ ", ".join(args) ++ ") -> " ++ res ++ ")"
 
 greedy_biclique_decomposition = (graph):
     flow_edges = {}
@@ -494,10 +573,11 @@ greedy_biclique_decomposition = (graph):
     return flow_variables
 
 # Instantiates a typing scheme that was generalized.
-instantiate_type = (scheme):
+instantiate_type = (scheme, relations):
     mapping = {}
     copy_node = (n):
         return n if n not in scheme.generic
+        relations.add(n) if "rel" in n.heads
         try
             return mapping[n]
         except KeyError as _
@@ -519,8 +599,8 @@ new_port = (graph=null):
     input = Node(-1)
     output = Node(+1)
     input.add_flow(output)
-    if graph
-        graph.add(input)
+    if graph                # If done on a free set of a scope,
+        graph.add(input)    # then this produces a free variable.
         graph.add(output)
     return (input=input, output=output)
 
@@ -617,14 +697,17 @@ is_subtype = (x, y):
     return false
 
 int_traits = set([
-    "(ord)", "(add)", "(vec)"
+    "ord", "vec_carry",
+    "add",
+    "sub",
 ])
 vec_traits = set([
-    "(add)"
+    "add"
 ])
 
 traits = set([
-    "(ord)", "(add)", "(vec)"
+    "ord", "vec_carry",
+    "add"
 ])
 
 
