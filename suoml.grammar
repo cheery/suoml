@@ -16,5 +16,6 @@ term:
     symbol / var
     string / string
     int    / int
+    float  / rational
 
-terminal symbol, string, int
+terminal symbol, string, int, float

@@ -1,37 +1,16 @@
 main(argv)
     print("suber")
 
+foo()
+    test(2.2)
+
+test(n)
+    sub_(n, 5)
+
+faabr(n)
+    add(add(3), 4)
+
 fibonacci(n)
     if gt(n, 2)
     then add(fibonacci(sub(n,1)), fibonacci(sub(n,2)))
     else 1
-
-
-test()
-    foo = print
-    test2()
-
-test2()
-    test3(4, 5)
-
-test3(n, m)
-    r = add(n, m)
-    if gt(r, 3)
-    then r
-    else 3
-
-id(a)
-    a
-
-vector_test(y)
-    v = vec3(1,y,3)
-    add(2, v)
-
-foo(a)
-    get_x(a)
-
-faa(a)
-    add(a, add(a, add(a, a)))
-
-braa(a)
-    get_x(add(a, 2))
