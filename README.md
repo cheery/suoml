@@ -1,12 +1,31 @@
-The programming language used to implement this language is
-[Lever](https://github.com/cheery/lever). The current plan is to
-resume and redesign that language once I have figured out
-the details in this small language.
-
 The work in this directory is based on Stephen Dolan's
 [MLsub](https://www.cl.cam.ac.uk/~sd601/mlsub/). The goal is
 to extend his work into a verifiable programming language
 that is flexible enough to dual as a computer algebra system.
+
+The goal was successful, but the result is somewhat anticlimactic. The
+main outcome was this clause:
+
+    B is a set of type constructors.
+    exist! y in B. forall x in B. x --> y
+
+The above clause can be used for implementing extensible type promotion. 
+
+An example: operator `a + b`.
+
+ 1. Find type for `a` and `b`, form `B` out of them.
+ 2. Apply the condition. Either the set has only one item.
+    Or then the `a --> b` or `b --> a`. If both occur at same time,
+    we cannot do unique coercion.
+ 3. `y` is the unique type that fullfilled the condition.
+ 4. Convert `a` and `b` to `y`. Pick implementation for `+`
+    from `y`. Evaluate the result.
+
+The language used in this repository is the previous version of
+[Lever](https://github.com/cheery/lever). Code contains a small experimental
+implementation of coercive operators with subtyping and type inference.
+
+## Coherent coercions
 
 Nicolas Doye presented an algorithm for automatically
 creating coercions between types in his paper
@@ -26,82 +45,22 @@ an another type produce the same result.
 
  [doye]: http://axiom-wiki.newsynthesis.org/public/refs/doye-aldor-phd.pdf
 
-Dolan's work would appear to be an ideal base for typing this kind of
-a system, yet the main problem of representing coercions remain.
-
-The reason why problem persist is that subtyping doesn't
-perfectly convey the idea of coercions. To see why, consider
-the idea below:
+Subtyping as it shows up in Dolan's MLSub doesn't perfectly
+convey the idea of coercions. To see why, consider the expression:
 
     (a + 3).x
-    ----------------------
-    int <: getattr("x", x)
-    a   <: getattr("x", x)
 
-If we went by representing coercions as subtyping
-expressions, we would face the puzzle as above.
+Assume that `(+)` is typed as `(a, a) -> a`, we would end up with
+the following constraints.
 
-`int` type itself has no way to provide an `.x` -attribute,
-but it could provide that given it gets promoted into a
-vector.
+    int <: getattr_x(x)
+    a   <: getattr_x(x)
 
-    (3).x
-    ----------------------
-    int <: getattr("x", x)
+`int` type has no way to provide `.x` -attribute, but the expression
+could become valid if `a` became a vector, because we could then
+lift `int` inside the vector. In this case though, the `(a, a) -> a`
+type signature for `(+)` does not hold.
 
-If we take a different case where the `int` type ends up
-being directly passed to retrieve `.x`, we can see that we
-have a problem here.
-
-The problem is that we cannot assume that there exist only
-one type that `int` can be promoted into, that has `.x`.
-
-We may also decide that the coercion must be speudo-implicit
-and tied to the arithmetic operations. In this case the type
-of addition would be:
-
-    (+) :: g -> g -> b, where g = a & coercible(b, a)
-
-Now the above expression `(3).x` would correctly present it
-has a type inference problem. Whereas the expression below
-would type:
-
-    (a + 3).x
-    ------------------------
-    b <: getattr("x", x)
-    a <: coercible(b, a|int)
-
-We could still get into a situation where the program does
-not provide correct type:
-
-    (15 + 3).x
-    -----------------------
-    b <: getattr("x", x)
-
-Although now this happens because the type inference no
-longer concerns over the problems of coercibility.
-
-We may face an another problem if we wanted the types to
-extend over dependently typed concepts such as matrices. For
-matrices the types of addition and multiplication should be:
-
-    (+) :: matrix(a,b) -> matrix(a,b) -> matrix(a,b)
-    (*) :: matrix(a,b) -> matrix(b,c) -> matrix(a,c)
-
-The matrix addition would appear to satisfy the rules we
-have laid. Partially because it's element-wise addition. The
-multiplication in other hand presents a trinary relation for
-us to solve. Eliminating the details of matrices leaves us
-with:
-
-    (*) :: a -> b -> c
-
-We might be able to abstract this out from the expression.
-
-    (*) :: a&g -> b&g -> c where g = rel("*",+a,+b,-c)
-
-This treatment would hoist the unsolvable trinary relations
-into the arguments of the function.
-
-Further experimentation is required to see whether this is a
-feasible approach to solve this problem.
+To make this work, the operators must be implemented a bit like typeclasses,
+and the types must be filled in whenever there is an operator which no longer
+has external inputs that would change the value.
