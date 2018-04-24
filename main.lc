@@ -135,34 +135,6 @@ populated_type_env = ():
 
     type_env['print'] = generalize(print_t, type_env)
 
-    # experimental form for arithmetic
-    sub_t = Node(+1)
-    arg_0 = Node(-1)
-    arg_1 = Node(-1)
-    res_t = Node(+1)
-    sub_t.add_transition(["dom", 0], arg_0)
-    sub_t.add_transition(["dom", 1], arg_1)
-    sub_t.add_transition(["cod"], res_t)
-    sub_t.heads.add("->")
-
-    sub_trait = Node(-1)
-    a0 = Node(+1)
-    a1 = Node(+1)
-    r0 = Node(-1)
-    a0.add_flow(arg_0)
-    a1.add_flow(arg_1)
-    r0.add_flow(res_t)
-    sub_trait.add_transition(["dom", 0], a0)
-    sub_trait.add_transition(["dom", 1], a1)
-    sub_trait.add_transition(["cod"], r0)
-    sub_trait.heads.add("->")
-    arg_0.add_transition(["sub"], sub_trait)
-    arg_1.add_transition(["sub"], sub_trait)
-    arg_0.heads.add("sub_")
-    arg_1.heads.add("sub_")
-
-    type_env['sub_'] = generalize(sub_t, type_env)
-
     # New-new-style relational 'add'
     add_t = Node(+1)
     arg_0 = Node(-1)
@@ -177,14 +149,19 @@ populated_type_env = ():
     rel_a = Node(+1)
     rel_b = Node(+1)
     rel_c = Node(-1)
+    rel_a.add_flow(arg_0)
+    rel_b.add_flow(arg_1)
+    rel_c.add_flow(res_t)
     rel.add_transition(["dom", 0], rel_a)
     rel.add_transition(["dom", 1], rel_b)
     rel.add_transition(["cod"], rel_c)
-    rel.add_flow(add_t)
-    rel.heads.add(":add")
     rel.heads.add("->")
 
-    rels = set([rel])
+    rel_desc = Node(-1)
+    rel_desc.heads.add("add")
+    rel_desc.add_transition(["add"], rel)
+
+    rels = set([rel_desc])
     type_env['add'] = generalize(add_t, type_env, rels)
 
     # New-style relational 'sub'
@@ -201,16 +178,20 @@ populated_type_env = ():
     rel_a = Node(+1)
     rel_b = Node(+1)
     rel_c = Node(-1)
+    rel_a.add_flow(arg_0)
+    rel_b.add_flow(arg_1)
+    rel_c.add_flow(res_t)
     rel.add_transition(["dom", 0], rel_a)
     rel.add_transition(["dom", 1], rel_b)
     rel.add_transition(["cod"], rel_c)
-    rel.add_flow(add_t)
-    rel.add_flow(sub_t)
-    rel.heads.add(":sub")
     rel.heads.add("->")
 
-    rels = set([rel])
-    type_env['sub'] = generalize(add_t, type_env, rels)
+    rel_desc = Node(-1)
+    rel_desc.heads.add("sub")
+    rel_desc.add_transition(["sub"], rel)
+
+    rels = set([rel_desc])
+    type_env['sub'] = generalize(sub_t, type_env, rels)
 
 
     # gt still needs some thought.
@@ -356,6 +337,8 @@ generalize = (root, type_env, rels=set()):
                 if n in rels
                     rels.discard(n)
                     type_env.rels.add(n)
+
+        # Seems wrong, but type_env.free fills up while this is going on.
         for node in type_env.free
             for w in node.flow
                 visit(w)
@@ -370,6 +353,116 @@ generalize = (root, type_env, rels=set()):
         return free
 
     free = recalculate_free(type_env)
+
+
+    visited = set()
+    reachable = set()
+    reach = (node):
+        return if node in free
+        return if node in visited
+        visited.add(node)
+        if node.pol < 0
+            for w in node.flow
+                reachable.add(w)
+        for label, ws in node.p_transitions.items()
+            for w in ws
+                reach(w)
+        for label, ws in node.n_transitions.items()
+            for w in ws
+                reach(w)
+    reach(root)
+
+    # relations reachable from 'free' are already isolated.
+    closed_rels = set(rels)
+    repeat = true
+    while repeat
+        repeat = false
+        for rel in rels
+            continue if rel not in closed_rels
+            if rel.heads == set(["add"])
+                for f in rel.p_transitions[["add"]]
+                    assert f.heads == set(["->"]), ["unknown add", f.heads]
+                    is_reachable = false
+                    for ws in f.n_transitions.values()
+                        for w in ws
+                            if w in reachable
+                                is_reachable = true
+                    if is_reachable
+                        closed_rels.discard(rel)
+                        for ws in f.p_transitions.values()
+                            for w in ws
+                                if w not in reachable
+                                    repeat = true
+                                    reachable.add(w)
+            elif rel.heads == set(["sub"])
+                for f in rel.p_transitions[["sub"]]
+                    assert f.heads == set(["->"]), ["unknown sub", f.heads]
+                    is_reachable = false
+                    for ws in f.n_transitions.values()
+                        for w in ws
+                            if w in reachable
+                                is_reachable = true
+                    if is_reachable
+                        closed_rels.discard(rel)
+                        for ws in f.p_transitions.values()
+                            for w in ws
+                                if w not in reachable
+                                    repeat = true
+                                    reachable.add(w)
+            else
+                assert false, ["unknown rel", rel.heads]
+    # SCC could help, but it's not needed at this point.
+
+    # TODO: If instantiation of something introduces a constraint
+    #       then have this system repeat for sub-constraints.
+    
+    # TODO: These actually may have to be copied, but only at the beginning
+    #       of a resolution cycle.
+    v = set()
+    repeat = true
+    while repeat
+        constraints = []
+        this_round = set(closed_rels)
+        second_round = set()
+        repeat = false
+        while this_round.length > 0
+            for rel in this_round
+                if rel.heads == set(["add"])
+                    for f in rel.p_transitions[["add"]]
+                        a = f.n_transitions[["dom", 0]]
+                        b = f.n_transitions[["dom", 1]]
+                        impl = resolve(a,b)
+                        if impl == null
+                            second_round.add(rel)
+                        else
+                            biunify_check([impl.constraint, f], set())
+                            biunify([impl.reflow, f], v)
+                            constraints.append([rel, impl, f])
+                elif rel.heads == set(["sub"])
+                    for f in rel.p_transitions[["sub"]]
+                        a = f.n_transitions[["dom", 0]]
+                        b = f.n_transitions[["dom", 1]]
+                        impl = resolve(a,b)
+                        if impl == null
+                            second_round.add(rel)
+                        else
+                            v_check = set()
+                            biunify_check([impl.constraint, f], set())
+                            biunify([impl.reflow, f], v)
+                            constraints.append([rel, impl, f])
+            assert second_round.length < this_round.length
+                "uncloseable relations"
+            this_round = second_round
+            second_round = set()
+        try
+            v_check = set()
+            for rel, impl, f in constraints
+                biunify_check([impl.constraint, f], v_check)
+        except CheckFail as _
+            repeat = true
+    for rel, impl, f in constraints
+        biunify([impl.constraint, f], v)
+        rels.discard(rel)
 
     if root in free
         return (generic=set(), root=root, rels=rels)
@@ -505,13 +598,11 @@ construct_type_repr = (head, node, get_p, get_n):
     if head == "get_x"
         args = [ get_p(node, [".x"]) ]
         return "get_x(" ++ ", ".join(args) ++ ")"
-    if head == "sub_"
-        args = [ get_p(node, ["sub"]) ]
-        return "sub_(" ++ ", ".join(args) ++ ")"
+    if head in ["add", "sub"]
+        args = [ get_p(node, [head]) ]
+        return head ++ "(" ++ ", ".join(args) ++ ")"
     if head in ["string", "int", "unit", "ord", "bool", "vec", "vec_carry", "rational"]
         return head ++ "()"
-    if head.startswith(":")
-        return head
     assert false, ["bug: missing type repr", head]
 
 functype_cons = (node, get_p, get_n):
@@ -589,6 +680,53 @@ instantiate_type = (scheme):
     for cls in scheme.rels
         rels.add(copy_node(cls))
     return (root=root, rels=rels)
+
+# TODO: there may be multiple p1,p2, multiple out, because we
+#       run non-merged.
+resolve = (ws1, ws2):
+    heads1 = set()
+    for w in ws1
+        heads1.update(w.heads)
+    heads2 = set()
+    for w in ws2
+        heads2.update(w.heads)
+    if heads1.length == 0 or heads2.length == 0
+        return null
+    if "rational" in heads1 or "rational" in heads2
+        a = Node(-1)
+        a.heads.add("rational")
+        b = Node(-1)
+        b.heads.add("rational")
+        c = Node(+1)
+        c.heads.add("rational")
+        f = Node(+1)
+        f.add_transition(["cod"], c)
+        f.add_transition(["dom", 0], a)
+        f.add_transition(["dom", 1], b)
+        f.heads.add("->")
+
+        reflow = Node(+1)
+        reflow.add_transition(["cod"], c)
+        reflow.heads.add("->")
+        return (reflow=reflow, constraint=f)
+    elif "int" in heads1 or "int" in heads2
+        a = Node(-1)
+        a.heads.add("int")
+        b = Node(-1)
+        b.heads.add("int")
+        c = Node(+1)
+        c.heads.add("int")
+        f = Node(+1)
+        f.add_transition(["cod"], c)
+        f.add_transition(["dom", 0], a)
+        f.add_transition(["dom", 1], b)
+        f.heads.add("->")
+
+        reflow = Node(+1)
+        reflow.add_transition(["cod"], c)
+        reflow.heads.add("->")
+        return (reflow=reflow, constraint=f)
+    return null
 
 # A small helper function.
 new_port = (graph=null):
@@ -670,6 +808,37 @@ biunify = (pair, visited):
             for s in ss
                 biunify([u,s], visited)
 
+biunify_check = (pair, visited):
+    return if pair in visited
+    visited.add(pair)
+    p, q = pair
+    assert p.pol > q.pol, "biunify must have form (+p, -q)"
+
+    # Check that subtyping constraints hold
+    for x in p.heads
+        for y in q.heads
+            extract_subtype(p,q,x,y)
+            if not is_subtype(x, y)
+                raise CheckFail(pair)
+
+    # Constraint decomposition
+    for label, ss in p.p_transitions.items()
+        uu = q.p_transitions.get(label, [])
+        for s in ss
+            for u in uu
+                biunify_check([s,u], visited)
+    for label, ss in p.n_transitions.items()
+        uu = q.n_transitions.get(label, [])
+        for u in uu
+            for s in ss
+                biunify_check([u,s], visited)
+
+class CheckFail extends Exception
+    +init = (self, pair):
+        self.pair = pair
+        self.traceback = null
+
+
 extract_subtype = (p, q, x, y):
     if x == "int" and y == "sub_" and (["sub"] not in p.p_transitions)
         sub_impl = Node(+1)
@@ -697,8 +866,6 @@ extract_subtype = (p, q, x, y):
         sub_impl.add_transition(["cod"], r0)
         sub_impl.heads.add("->")
         p.add_transition(["sub"], sub_impl)
-
-    
 
 # TODO: it is not practical to list all trait edges for the positive
 #       types. The 'biunify' needs a function that infers the missing
