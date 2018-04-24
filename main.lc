@@ -2,12 +2,6 @@ import grammar
 
 language = grammar.read_file("suoml.grammar")
 
-#TODO: add proper trait methods for operations that appear here.
-#TODO: try the strict trait methods first.
-#TODO: add the compositive type system.
-
-#TODO: implement the SCC + copy solver -thing.
-
 main = ():
     parse = language.read_file("sample.fml")
     decls = parse.traverse((rule, args, loc):
@@ -534,11 +528,9 @@ generalize = (root, type_env, rels=set()):
                     s.add_flow(q)
     return (generic=set(subsets.values()), root=root, rels=cp_rels)
     
-
 # Remember that for subtyping, type variables represent flows.
 # This means that only-covariant or only-contravariant type variables
 # do not really convey useful information.
-
 
 # TODO: improve to handle 'free' variables in env?
 to_raw_type = (scheme):
