@@ -1,998 +1,441 @@
 import grammar
+import types
+
+# TODO: Start catching comments from this file and create .md file out of them.
+# TODO: Some simple arithmetic, maybe the fibonacci and such..
+# TODO: Figure out machinery for declaring new abstract datatypes.
+
+# The SCC finding is likely necessary for handling recursion.
+from graph_utils import
+    tarjan_find_scc,
+    greedy_biclique_decomposition
+
+t_string   = types.SimpleHeader('string')
+t_int      = types.SimpleHeader('int')
+t_rational = types.SimpleHeader('rational')
+
+t_unit = types.SimpleHeader('unit')
+
 
 language = grammar.read_file("suoml.grammar")
 
 main = ():
+    actions = object({
+        def = Def
+        app = App
+        let = Let
+        abs = Abs
+        if_then_else = IfThenElse
+        var = Var
+        string = (val):
+            return Lit(val, t_string)
+        int = (val):
+            return Lit(val, t_int)
+        rational = (val):
+            return Lit(val, t_rational)
+    })
     parse = language.read_file("sample.fml")
     decls = parse.traverse((rule, args, loc):
         return getattr(actions, rule)(args...))
 
-    type_env = populated_type_env()
+    declared = {}
 
-    # The subtyping algorithm requires a similar
-    # treatment as the Algorithm W in order to handle recursive clauses
-    # correctly. Therefore this builds the dependency graph so that the
-    # SCC algorithm then sort the expressions out.
-    decl_by_name = {}
+    # We could use builtin function header here without
+    # causing any issues, since we can use simple headers to
+    # illustrate this system, we do so.
+    f = types.State(+1)
+    z = types.State(-1)
+    r = types.State(+1)
+    z.heads.add(t_string)
+    r.heads.add(t_unit)
+    f.heads.add(types.get_function_header(1))
+    f.add_transition(types.dom[0], z)
+    f.add_transition(types.cod, r)
+    declared['print'] = generalize(f, null)
+
+    f = types.State(+1)
+    f.heads.add(types.t_call)
+    declared['call'] = generalize(f, null)
+
+
+    namespace = {}
     for decl in decls
-        decl_by_name[decl.name] = decl
+        namespace[decl.name] = decl
+
+    dependency_graph = {}
     for decl in decls
-        for name in decl.free_vars
-            if name in decl_by_name
-                decl.depends.add(decl_by_name[name])
-            elif name not in type_env
+        dependencies = set()
+        for name in scan_free_vars(decl)
+            if name in namespace
+                dependencies.add(name)
+            elif name not in declared
                 assert false, ["not present", name]
+        dependency_graph[decl.name] = dependencies
 
-    out = tarjan_find_scc(decls)
+    scc = tarjan_find_scc(dependency_graph)
 
+    for group in scc
+        is_rec = group_is_recursive(group, dependency_graph)
+        new_types = infer_group(declared, group, is_rec, namespace)
+        declared.update(new_types)
+
+    for name, scheme in declared.items()
+        print(name, "::", to_raw_type(scheme))
+
+scan_free_vars = (a):
+    if isinstance(a, Def)
+        free = scan_free_vars(a.body)
+        free.difference_update(a.args)
+        return free
+    if isinstance(a, Abs)
+        free = scan_free_vars(a.body)
+        for arg in a.args
+            free.discard(arg)
+        return free
+    if isinstance(a, App)
+        free = scan_free_vars(a.lhs)
+        for arg in a.args
+            free.update(scan_free_vars(arg))
+        return free
+    if isinstance(a, Var)
+        return set([a.name])
+    if isinstance(a, Lit)
+        return set()
+    if isinstance(a, Let)
+        free = scan_free_vars(a.rhs)
+        free.discard(a.name)
+        free.update( scan_free_vars(a.lhs) )
+        return free
+    if isinstance(a, IfThenElse)
+        free = scan_free_vars(a.cond)
+        free.update(scan_free_vars(a.t))
+        free.update(scan_free_vars(a.f))
+        return free
+    assert false, ["free vars for?", a]
+
+group_is_recursive = (group, dependency_graph):
+    if group.length == 1
+        name = list(group)[0]
+        return name in dependency_graph[name]
+    else
+        return true
+
+# First create scope with blank variables
+# Next do inference as usual, the biunification associates the signature
+# with the previous blank variable.
+# Finally the variables end up being correctly generalized, and
+# it yields polymorphic types for declarations.
+infer_group = (predeclared, group, recursive, namespace):
+    env = TypeEnv(predeclared, null)
     visited = set()
+    result = {}
+    if recursive
+        ports = {}
+        for name in group
+            ports[name] = port = types.new_port(env.free)
+            env.schemes[name] = generalize(port.output, env)
+             
+        for name in group
+            port = ports[name]
+            decl = namespace[name]
+            scheme = infer(Abs(decl.args, decl.body), env, visited)
+            types.biunify([scheme.root, port.input], visited)
 
-    for name in type_env
-        print(name, "::", to_raw_type(type_env[name]))
-
-    for group in out
-        assert type_env.rels.length == 0
-            "bug: unclosed relations"
-        if group.length == 1
-            decl = iter(group).next()
-            recursive = decl in decl.depends
-        else
-            recursive = true
-
-        if recursive
-            sub_env = TypeEnv(type_env)
-            # First creating a scope with blank variables for each declaration.
-            ports = {}
-            for decl in group
-                ports[decl.name] = port = new_port(sub_env.free)
-                sub_env[decl.name] = generalize(port.output, sub_env)
-
-            # Next doing the type inference as usual, in the subscope.
-            # The biunification associates the signature with
-            # the previously blank variable.
-            for decl in group
-                port = ports[decl.name]
-                scheme = inference(Abs(decl.args, decl.body), sub_env, visited)
-                biunify([scheme.root, port.input], visited)
-                sub_env.rels.update(scheme.rels)
-
-            # Finally the variables are properly generalized to yield the
-            # polymorphic types for declarations.
-            for decl in group
-                port = ports[decl.name]
-                type_env[decl.name] = scheme_g = generalize(port.output, type_env, sub_env.rels)
-                print(decl.name, "::", to_raw_type(scheme_g))
-
-        else
-            decl = group.pop()
-            scheme = inference(Abs(decl.args, decl.body), type_env, visited)
-            type_env[decl.name] = scheme_g = generalize(scheme.root, type_env, scheme.rels)
-
-            print(decl.name, "::", to_raw_type(scheme_g))
+        for name in group
+            port = ports[name]
+            result[name] = generalize(port.output, null)
+    else
+        for name in group
+            decl = namespace[name]
+            scheme = infer(Abs(decl.args, decl.body), env, visited)
+            result[name] = generalize(scheme.root, null)
+    return result
 
 # THE STRUCTURE OF TYPE ENV
 # parent  : type_env
-# free    : set(Node)
-#   The set of nodes that are free in this type env.
+# free    : set(State)
+#   The set of states that are free in this type env.
 #   Nodes must be removed from this env if they become free in parent.
-# binding : {generic: set(Node), root: Node}
+# schemes : {generic: set(State), root: State}
 #   'generic' are generic parts of the binding. They *must* not be reachable
 #   from any 'free' set.
-#   'root' is the root node of the type.
+#   'root' is the root state of the type.
 class TypeEnv
-    +init = (self, parent=null, free=set(), binding={}):
+    +init = (self, schemes, parent):
+        self.schemes = schemes
         self.parent = parent
-        self.free = free
-        self.binding = binding
-        self.rels = set()
-
-    +iter = (self):
-        if self.parent
-            out = list(self.parent)
-            out.extend(self.binding.keys())
-            return iter(out)
-        else
-            return self.binding.keys()
-
-    +contains = (self, name):
-        if name in self.binding
-            return true
-        if self.parent
-            return name in self.parent
-        return false
+        self.free = set()
 
     +getitem = (self, name):
         try
-            obj = self.binding[name]
-            return obj
+            scheme = self.schemes[name]
+            return scheme
         except KeyError as ke
             raise ke if not self.parent
             return self.parent[name]
 
-    +setitem = (self, name, value):
-        self.binding[name] = value
-
-# TODO: Many of these typings here are likely wrong for subtyping.
-populated_type_env = ():
-    type_env = TypeEnv()
-
-    # (string) -> unit
-    print_t = Node(+1)
-    arg_t = Node(-1)
-    arg_t.heads.add("string")
-    result_t = Node(+1)
-    result_t.heads.add("unit")
-
-    print_t.add_transition(["dom", 0], arg_t)
-    print_t.add_transition(["cod"], result_t)
-    print_t.heads.add("->")
-
-    type_env['print'] = generalize(print_t, type_env)
-
-    # New-new-style relational 'add'
-    add_t = Node(+1)
-    arg_0 = Node(-1)
-    arg_1 = Node(-1)
-    res_t = Node(+1)
-    add_t.add_transition(["dom", 0], arg_0)
-    add_t.add_transition(["dom", 1], arg_1)
-    add_t.add_transition(["cod"], res_t)
-    add_t.heads.add("->")
-
-    rel = Node(-1)
-    rel_a = Node(+1)
-    rel_b = Node(+1)
-    rel_c = Node(-1)
-    rel_a.add_flow(arg_0)
-    rel_b.add_flow(arg_1)
-    rel_c.add_flow(res_t)
-    rel.add_transition(["dom", 0], rel_a)
-    rel.add_transition(["dom", 1], rel_b)
-    rel.add_transition(["cod"], rel_c)
-    rel.heads.add("->")
-
-    rel_desc = Node(-1)
-    rel_desc.heads.add("add")
-    rel_desc.add_transition(["add"], rel)
-
-    rels = set([rel_desc])
-    type_env['add'] = generalize(add_t, type_env, rels)
-
-    # New-style relational 'sub'
-    sub_t = Node(+1)
-    arg_0 = Node(-1)
-    arg_1 = Node(-1)
-    res_t = Node(+1)
-    sub_t.add_transition(["dom", 0], arg_0)
-    sub_t.add_transition(["dom", 1], arg_1)
-    sub_t.add_transition(["cod"], res_t)
-    sub_t.heads.add("->")
-
-    rel = Node(-1)
-    rel_a = Node(+1)
-    rel_b = Node(+1)
-    rel_c = Node(-1)
-    rel_a.add_flow(arg_0)
-    rel_b.add_flow(arg_1)
-    rel_c.add_flow(res_t)
-    rel.add_transition(["dom", 0], rel_a)
-    rel.add_transition(["dom", 1], rel_b)
-    rel.add_transition(["cod"], rel_c)
-    rel.heads.add("->")
-
-    rel_desc = Node(-1)
-    rel_desc.heads.add("sub")
-    rel_desc.add_transition(["sub"], rel)
-
-    rels = set([rel_desc])
-    type_env['sub'] = generalize(sub_t, type_env, rels)
-
-
-    # gt still needs some thought.
-    gt_t = Node(+1)
-    arg_0 = Node(-1)
-    arg_1 = Node(-1)
-    res_t = Node(+1)
-    res_t.heads.add("bool")
-    gt_t.add_transition(["dom", 0], arg_0)
-    gt_t.add_transition(["dom", 1], arg_1)
-    gt_t.add_transition(["cod"], res_t)
-    gt_t.heads.add("->")
-    arg_0.heads.add("ord")
-    arg_1.heads.add("ord")
-    type_env['gt'] = generalize(gt_t, type_env)
-
-    # This seems wrong as well.. Vector has no parameter.
-    vec3_t = Node(+1)
-    arg_0 = Node(-1)
-    arg_1 = Node(-1)
-    arg_2 = Node(-1)
-    res_t = Node(+1)
-    res_t.heads.add("vec")
-    vec3_t.add_transition(["dom", 0], arg_0)
-    vec3_t.add_transition(["dom", 1], arg_1)
-    vec3_t.add_transition(["dom", 2], arg_2)
-    vec3_t.add_transition(["cod"], res_t)
-    vec3_t.heads.add("->")
-    arg_0.heads.add("vec_carry")
-    arg_1.heads.add("vec_carry")
-    arg_2.heads.add("vec_carry")
-    type_env['vec3'] = generalize(vec3_t, type_env)
-
-    get_x = Node(+1)
-    arg_0 = Node(-1)
-    res_i = Node(-1)
-    res_t = Node(+1)
-    arg_0.heads.add("get_x")
-    arg_0.add_transition([".x"], res_i)
-    get_x.heads.add("->")
-    get_x.add_transition(["dom", 0], arg_0)
-    get_x.add_transition(["cod"], res_t)
-    res_t.add_flow(res_i)
-    type_env['get_x'] = generalize(get_x, type_env)
-
-    return type_env
-
-
-inference = (a, type_env, visited):
+infer = (a, env, visited):
     if isinstance(a, Abs)
-        type_env = TypeEnv(type_env)
-
+        a_env = TypeEnv({}, env)
         ports = []
         for arg in a.args
-            port = new_port(type_env.free)
+            port = types.new_port(a_env.free)
             ports.append(port)
-            type_env[arg] = (generic = set(), root = port.output, rels=set())
-        result = inference(a.body, type_env, visited)
-        type_env.rels.update(result.rels)
+            a_env.schemes[arg] = generalize(port.output, a_env)
+        a_scheme = infer(a.body, a_env, visited)
 
-        functype = Node(+1)
+        functype = types.State(+1)
+        functype.heads.add(types.get_function_header(ports.length))
         for i in range(ports.length)
-            functype.add_transition(
-                ["dom", i], ports[i].input)
-        functype.add_transition(["cod"], result.root)
-        functype.heads.add("->")
-
-        return (root=functype, rels=type_env.rels)
+            functype.add_transition(types.dom[i], ports[i].input)
+        functype.add_transition(types.cod, a_scheme.root)
+        return (root=functype)
 
     if isinstance(a, App)
-        lhs_scheme = inference(a.lhs, type_env, visited)
-        rels = set(lhs_scheme.rels)
+        lhs_scheme = infer(a.lhs, env, visited)
 
-        calltype = Node(-1)
-        calltype.heads.add("->")
-        i = 0
+        op_site = types.new_operator(types.t_call, [0],
+            1 + a.args.length)
+        sink = types.new_port()
+        sink.input.heads.add(types.SinkHeader(0, op_site))
+
+        calltype = types.State(-1)
+        calltype.heads.add(op_site.expect)
+        calltype.add_transition(types.dom[0], sink.output)
+        i = 1
         for arg in a.args
-            arg_scheme = inference(arg, type_env, visited)
-            calltype.add_transition(["dom", i], arg_scheme.root)
-            rels.update(arg_scheme.rels)
+            arg_scheme = infer(arg, env, visited)
+            calltype.add_transition(types.dom[i], arg_scheme.root)
             i += 1
-        result = new_port()
-        calltype.add_transition(
-            ["cod"], result.input)
-        biunify([lhs_scheme.root, calltype], visited)
-        return (root=result.output, rels=rels)
+        result = types.new_port()
+
+        calltype.add_transition(types.cod, result.input)
+        sink.input.add_transition(op_site.edge, calltype)
+
+        types.biunify([lhs_scheme.root, sink.input], visited)
+
+        return (root=result.output)
+
+    if isinstance(a, Var)
+        a_scheme = instantiate_type(env[a.name])
+        return a_scheme
+
+    if isinstance(a, Lit)
+        result = types.State(+1)
+        result.heads.add(a.type)
+        return (root=result)
 
     if isinstance(a, IfThenElse)
-        cond = inference(a.cond, type_env, visited)
+        cond = infer(a.cond, env, visited)
 
         boolean = Node(-1)
-        boolean.heads.add("bool")
+        boolean.heads.add(bool_t)
+
         biunify([cond.root, boolean], visited)
-        t = inference(a.t, type_env, visited)
-        f = inference(a.f, type_env, visited)
+        t = infer(a.t, env, visited)
+        f = infer(a.f, env, visited)
 
         result = new_port()
         biunify([t.root, result.input], visited)
         biunify([f.root, result.input], visited)
 
-        return (root=result.output,
-            rels=cond.rels | t.rels | f.rels)
+        return (root=result.output)
 
     if isinstance(a, Let)
-        lhs_scheme = inference(a.lhs, type_env, visited)
+        lhs_scheme = inference(a.lhs, env, visited)
 
-        type_env = TypeEnv(type_env)
-        type_env[a.name] = generalize(lhs_scheme.root, type_env)
-        rhs_scheme = inference(a.rhs, type_env, visited)
+        a_env = TypeEnv(env)
+        a_env.schemes[a.name] = generalize(lhs_scheme.root, env)
+        rhs_scheme = inference(a.rhs, a_env, visited)
 
-        return (root=rhs_scheme.root,
-            rels = lhs_scheme.rels | rhs_scheme.rels)
+        return (root=rhs_scheme.root)
 
-    if isinstance(a, Var)
-        scheme = instantiate_type(type_env[a.name])
-        return scheme
+    assert false, ["implement infer(a)", a]
 
-    if isinstance(a, Lit)
-        result = Node(+1)
-        result.heads.add(a.type)
-        return (root=result, rels=set())
+# Remember that for subtyping, type variables represent flows.
+# This means that only-covariant or only-contravariant type variables
+# do not really convey useful information.
+to_raw_type = (scheme):
+    flow_variables = greedy_biclique_decomposition(
+        scheme.generic,
+        (vertex):
+            return vertex.flow)
 
-    assert false, ["unable to inference", a]
+    visi = set()
+    mapi = {}
+    rvar_id = 0
 
+    trail = set()
 
-# The generalize recalculates the 'free' node sets in the environment by
+    s_visit = (state):
+        assert state in scheme.generic
+        if state in visi
+            sym = "rec.r" ++ (rvar_id).to_string()
+            mapi[state] = "let.r" ++ (rvar_id).to_string()
+            rvar_id += 1
+            return sym
+        visi.add(state)
+
+        if state.pol > 0
+            operator = " | "
+        else
+            operator = " & "
+
+        typedecl = []
+        for head in state.heads
+            # TODO: Sink headers should get different treatment,
+            #       For now we hide them.
+            if isinstance(head, types.SinkHeader)
+                name = repr(head.site.op)
+                trail.add("\n  " ++ name ++ " : " ++
+                    e_visit(state, head.site.edge))
+                if name not in typedecl
+                    typedecl.append(name)
+                continue
+            typedecl.append(r_visit(head, state))
+        for v in flow_variables[state]
+            typedecl.append("a" ++ (v).to_string())
+
+        if state in mapi
+            typedecl.insert(0, mapi.pop(state))
+        visi.discard(state)
+        return "(" ++ operator.join(typedecl) ++ ")"
+
+    r_visit = (head, state):
+        px = {}
+        for edge in head.params()
+            px[edge] = e_visit(state, edge)
+        return head.stringify(px)
+
+    e_visit = (state, edge):
+        if edge not in state.transitions
+            return "(error)"
+        ws = state.transitions[edge]
+        if ws.length == 0
+            return "()"
+        assert ws.length == 1, "not a reduced type form"
+        w = list(ws)[0]
+        return s_visit(w)
+
+    return s_visit(scheme.root) ++ "".join(trail)
+
+# The generalize recalculates the 'free' state sets in the environment by
 # extending it. Then it runs a subset construction that takes everything
 # not in 'free' and constructs a new graph. 'generic' ends up labeling the
-# nodes present in this new sub-graph.
-generalize = (root, type_env, rels=set()):
+# states present in this new sub-graph.
+generalize = (root, env):
+    recalculate_free = (env):
+        if env == null
+            return set()
+        free = recalculate_free(env.parent)
+        # Nodes free in parent do not need to appear in free set
+        env.free.difference_update(free)
 
-    recalculate_free = (type_env):
-        if type_env.parent
-            free = recalculate_free(type_env.parent)
-            # Nodes free in parent do not need to appear in free set
-            type_env.free.difference_update(free)
-        else
-            free = set()
+        visit = (state):
+            if state not in free
+                env.free.add(state)
 
-        visit = (n):
-            if n not in free
-                type_env.free.add(n)
-                if n in rels
-                    rels.discard(n)
-                    type_env.rels.add(n)
-
-        # Seems wrong, but type_env.free fills up while this is going on.
-        for node in type_env.free
-            for w in node.flow
+        # type_env.free fills up while this is going on.
+        for state in env.free
+            for w in state.flow
                 visit(w)
-            for label, ws in node.p_transitions.items()
-                for w in ws
-                    visit(w)
-            for label, ws in node.n_transitions.items()
+            for edge, ws in state.transitions.items()
                 for w in ws
                     visit(w)
 
-        free.update(type_env.free)
+        free.update(env.free)
         return free
+    free = recalculate_free(env)
 
-    free = recalculate_free(type_env)
-
-
-    visited = set()
-    reachable = set()
-    reach = (node):
-        return if node in free
-        return if node in visited
-        visited.add(node)
-        if node.pol < 0
-            for w in node.flow
-                reachable.add(w)
-        for label, ws in node.p_transitions.items()
-            for w in ws
-                reach(w)
-        for label, ws in node.n_transitions.items()
-            for w in ws
-                reach(w)
-    reach(root)
-
-    # relations reachable from 'free' are already isolated.
-    closed_rels = set(rels)
-    repeat = true
-    while repeat
-        repeat = false
-        for rel in rels
-            continue if rel not in closed_rels
-            if rel.heads == set(["add"])
-                for f in rel.p_transitions[["add"]]
-                    assert f.heads == set(["->"]), ["unknown add", f.heads]
-                    is_reachable = false
-                    for ws in f.n_transitions.values()
-                        for w in ws
-                            if w in reachable
-                                is_reachable = true
-                    if is_reachable
-                        closed_rels.discard(rel)
-                        for ws in f.p_transitions.values()
-                            for w in ws
-                                if w not in reachable
-                                    repeat = true
-                                    reachable.add(w)
-            elif rel.heads == set(["sub"])
-                for f in rel.p_transitions[["sub"]]
-                    assert f.heads == set(["->"]), ["unknown sub", f.heads]
-                    is_reachable = false
-                    for ws in f.n_transitions.values()
-                        for w in ws
-                            if w in reachable
-                                is_reachable = true
-                    if is_reachable
-                        closed_rels.discard(rel)
-                        for ws in f.p_transitions.values()
-                            for w in ws
-                                if w not in reachable
-                                    repeat = true
-                                    reachable.add(w)
-            else
-                assert false, ["unknown rel", rel.heads]
-    # SCC could help, but it's not needed at this point.
-
-    # TODO: If instantiation of something introduces a constraint
-    #       then have this system repeat for sub-constraints.
-    
-    # TODO: These actually may have to be copied, but only at the beginning
-    #       of a resolution cycle.
-    v = set()
-    repeat = true
-    while repeat
-        constraints = []
-        this_round = set(closed_rels)
-        second_round = set()
-        repeat = false
-        while this_round.length > 0
-            for rel in this_round
-                if rel.heads == set(["add"])
-                    for f in rel.p_transitions[["add"]]
-                        a = f.n_transitions[["dom", 0]]
-                        b = f.n_transitions[["dom", 1]]
-                        impl = resolve(a,b)
-                        if impl == null
-                            second_round.add(rel)
-                        else
-                            biunify_check([impl.constraint, f], set())
-                            biunify([impl.reflow, f], v)
-                            constraints.append([rel, impl, f])
-                elif rel.heads == set(["sub"])
-                    for f in rel.p_transitions[["sub"]]
-                        a = f.n_transitions[["dom", 0]]
-                        b = f.n_transitions[["dom", 1]]
-                        impl = resolve(a,b)
-                        if impl == null
-                            second_round.add(rel)
-                        else
-                            v_check = set()
-                            biunify_check([impl.constraint, f], set())
-                            biunify([impl.reflow, f], v)
-                            constraints.append([rel, impl, f])
-            assert second_round.length < this_round.length
-                "uncloseable relations"
-            this_round = second_round
-            second_round = set()
-        try
-            v_check = set()
-            for rel, impl, f in constraints
-                biunify_check([impl.constraint, f], v_check)
-        except CheckFail as _
-            repeat = true
-    for rel, impl, f in constraints
-        biunify([impl.constraint, f], v)
-        rels.discard(rel)
-
-    if root in free
-        return (generic=set(), root=root, rels=rels)
 
     # subsets : {set(Node) : Node}
     # membership : {Node : set(Node)}
     subsets = {}
     membership = {}
 
+    reduce_site_port = (port):
+        return reduce_subset(port.pol, set([port]))
     reduce_subset = (pol, subset):
         if subset in subsets
             return subsets[subset]
-        subsets[subset] = s = Node(pol)
+        subsets[subset] = s = types.State(pol)
+        rw_edge = {}
         for n in subset
-            assert n not in free, "bug: subset must not contain free nodes"
-            s.heads.update(n.heads)
+            assert n not in free, "bug: subset must not contain free states"
+            for head in n.heads
+                if isinstance(head, types.SinkHeader)
+                    site = head.site.transfer(reduce_site_port)
+                    rw_edge[head.site.edge] = site.edge
+                    head = types.SinkHeader(head.index, site)
+                s.heads.add(head)
             try
                 membership[n].append(s)
             except KeyError as _
                 membership[n] = [s]
-            for label, ws in n.p_transitions.items()
+            for edge, ws in n.transitions.items()
                 for w in ws
-                    s.add_transition(label, w)
-            for label, ws in n.n_transitions.items()
-                for w in ws
-                    s.add_transition(label, w)
+                    s.add_transition(edge, w)
 
-            # TODO: Check whether this does what expected.
-            # Retains flow edges into the objects that are not
-            # in the graph.
-            for w in n.flow
-                if w not in free
-                    s.add_flow(w)
-
-        p_transitions = {}
-        for label, ws in s.p_transitions.items()
+        transitions = {}
+        for edge, ws in s.transitions.items()
+            edge = rw_edge.get(edge, edge)
             extern = set()
             for w in ws
                 if w in free
                     extern.add(w)
             ws.difference_update(extern)
-            p_transitions[label] = set([reduce_subset(pol, ws)]) | extern
-        s.p_transitions = p_transitions
-
-        n_transitions = {}
-        for label, ws in s.n_transitions.items()
-            extern = set()
-            for w in ws
-                if w in free
-                    extern.add(w)
-            ws.difference_update(extern)
-            n_transitions[label] = set([reduce_subset(-pol, ws)]) | extern
-        s.n_transitions = n_transitions
-
+            transitions[edge] = set([reduce_subset(pol*edge.pol, ws)]) | extern
+        s.transitions = transitions
         return s
 
+    if root in free
+        return (generic=set(), root=root)
     root = reduce_subset(root.pol, set([root]))
-    cp_rels = set()
-    for n in rels
-        cp_rels.add(reduce_subset(n.pol, set([n])))
-
-    for node, ss in membership.items()
-        continue if node.pol > 0
-        for w in node.flow
-            assert w not in free, "bug: free node that is not marked free"
+    for state, ss in membership.items()
+        continue if state.pol > 0
+        for w in state.flow
+            assert w not in free, "bug: free state that is not marked free"
             qq = membership.get(w, [])
             for s in ss
                 for q in qq
                     s.add_flow(q)
-    return (generic=set(subsets.values()), root=root, rels=cp_rels)
-    
-# Remember that for subtyping, type variables represent flows.
-# This means that only-covariant or only-contravariant type variables
-# do not really convey useful information.
+    return (generic=set(subsets.values()), root=root)
 
-# TODO: improve to handle 'free' variables in env?
-to_raw_type = (scheme):
-    flow_variables = greedy_biclique_decomposition(scheme.generic)
-    visi = set()
-    mapi = {}
-    r = 0
-
-    get_raw_type = (node):
-        if node in visi
-            sym = "rec." ++ (r + 10).to_string(35)
-            mapi[node] = "let." ++ sym
-            r += 1
-            return [sym]
-        visi.add(node)
-        # Resolve recursion somehow.
-        if node.pol > 0
-            operator = " | "
-        else
-            operator = " & "
-
-        typedecl = []
-        for head in node.heads
-            typedecl.append(construct_type_repr(head, node, get_p, get_n))
-
-        for v in flow_variables[node]
-            typedecl.append((v + 10).to_string(35))
-
-        if node in mapi
-            typedecl.insert(0, mapi.pop(node))
-        visi.discard(node)
-        return "(" ++ operator.join(typedecl) ++ ")"
-    get_p = (node, label):
-        ws = node.p_transitions[label]
-        assert ws.length == 1
-            "to_raw_type() only works on reduced type forms without free nodes in them"
-        w = iter(ws).next()
-        return get_raw_type(w)
-    get_n = (node, label):
-        ws = node.n_transitions[label]
-        assert ws.length == 1
-            "to_raw_type() only works on reduced type forms without free nodes in them"
-        w = iter(ws).next()
-        return get_raw_type(w)
-
-    s = get_raw_type(scheme.root)
-    l = [s]
-
-    for node in scheme.rels
-        l.append(get_raw_type(node))
-
-    return "\n  ".join(l)
-
-construct_type_repr = (head, node, get_p, get_n):
-    if head == "->" # TODO: We need the arity here.
-        return functype_cons(node, get_p, get_n)
-    if head == "get_x"
-        args = [ get_p(node, [".x"]) ]
-        return "get_x(" ++ ", ".join(args) ++ ")"
-    if head in ["add", "sub"]
-        args = [ get_p(node, [head]) ]
-        return head ++ "(" ++ ", ".join(args) ++ ")"
-    if head in ["string", "int", "unit", "ord", "bool", "vec", "vec_carry", "rational"]
-        return head ++ "()"
-    assert false, ["bug: missing type repr", head]
-
-functype_cons = (node, get_p, get_n):
-        arity = 0
-        for label in node.n_transitions
-            if label[0] == "dom"
-                arity = max(arity, label[1]+1)
-        args = []
-        for k in range(arity)
-            args.append( get_n(node, ["dom", k]) )
-        res = get_p(node, ["cod"])
-        return "(" ++ "(" ++ ", ".join(args) ++ ") -> " ++ res ++ ")"
-
-greedy_biclique_decomposition = (graph):
-    flow_edges = {}
-    flow_variables = {}
-
-    for node in graph
-        edges = set()
-        for w in node.flow
-            if w in graph
-                edges.add(w)
-        flow_edges[node] = edges
-        flow_variables[node] = []
-
-    var_id = 0
-    best_score = 1
-    while best_score > 0
-        best_biclique = null
-        best_score = 0
-        for node in graph
-            a = flow_edges[node]
-            if a.length == 0 # No biclique here.
-                continue
-            it = iter(a)
-            b = set(flow_edges[it.next()])
-            for w in it
-                b.intersection_update(flow_edges[w])
-            score = a.length * b.length
-            if best_score < score
-                best_score = score
-                best_biclique = [a,b]
-        if best_biclique
-            a,b = best_biclique
-            for n in a
-                flow_variables[n].append(var_id)
-                flow_edges[n].difference_update(b)
-            for n in b
-                flow_variables[n].append(var_id)
-                flow_edges[n].difference_update(a)
-            var_id += 1
-    return flow_variables
-
-# Instantiates a typing scheme that was generalized.
 instantiate_type = (scheme):
     mapping = {}
-    copy_node = (n):
+    copy_state = (n):
         return n if n not in scheme.generic
         try
             return mapping[n]
         except KeyError as _
-            mapping[n] = m = Node(n.pol)
-            m.heads.update(n.heads)
+            mapping[n] = m = types.State(n.pol)
+            rw_edge = {}
+            for head in n.heads
+                if isinstance(head, types.SinkHeader)
+                    site = head.site.transfer(copy_state)
+                    rw_edge[head.site.edge] = site.edge
+                    head = types.SinkHeader(head.index, site)
+                m.heads.add(head)
             for w in n.flow
-                m.flow.add(copy_node(w))
-            for label, ws in n.p_transitions.items()
+                m.flow.add(copy_state(w))
+            for edge, ws in n.transitions.items()
+                edge = rw_edge.get(edge, edge)
                 for w in ws
-                    m.add_transition(label, copy_node(w))
-            for label, ws in n.n_transitions.items()
-                for w in ws
-                    m.add_transition(label, copy_node(w))
+                    m.add_transition(edge, copy_state(w))
             return m
-    root=copy_node(scheme.root)
-    rels = set()
-    for cls in scheme.rels
-        rels.add(copy_node(cls))
-    return (root=root, rels=rels)
-
-# TODO: there may be multiple p1,p2, multiple out, because we
-#       run non-merged.
-resolve = (ws1, ws2):
-    heads1 = set()
-    for w in ws1
-        heads1.update(w.heads)
-    heads2 = set()
-    for w in ws2
-        heads2.update(w.heads)
-    if heads1.length == 0 or heads2.length == 0
-        return null
-    if "rational" in heads1 or "rational" in heads2
-        a = Node(-1)
-        a.heads.add("rational")
-        b = Node(-1)
-        b.heads.add("rational")
-        c = Node(+1)
-        c.heads.add("rational")
-        f = Node(+1)
-        f.add_transition(["cod"], c)
-        f.add_transition(["dom", 0], a)
-        f.add_transition(["dom", 1], b)
-        f.heads.add("->")
-
-        reflow = Node(+1)
-        reflow.add_transition(["cod"], c)
-        reflow.heads.add("->")
-        return (reflow=reflow, constraint=f)
-    elif "int" in heads1 or "int" in heads2
-        a = Node(-1)
-        a.heads.add("int")
-        b = Node(-1)
-        b.heads.add("int")
-        c = Node(+1)
-        c.heads.add("int")
-        f = Node(+1)
-        f.add_transition(["cod"], c)
-        f.add_transition(["dom", 0], a)
-        f.add_transition(["dom", 1], b)
-        f.heads.add("->")
-
-        reflow = Node(+1)
-        reflow.add_transition(["cod"], c)
-        reflow.heads.add("->")
-        return (reflow=reflow, constraint=f)
-    return null
-
-# A small helper function.
-new_port = (graph=null):
-    input = Node(-1)
-    output = Node(+1)
-    input.add_flow(output)
-    if graph                # If done on a free set of a scope,
-        graph.add(input)    # then this produces a free variable.
-        graph.add(output)
-    return (input=input, output=output)
-
-class Node
-    +init = (self, pol=+1):
-        self.pol = pol
-        self.heads = set()
-        self.flow = set()
-        self.p_transitions = {}
-        self.n_transitions = {}
-
-    add_flow = (self, other):
-        assert self.pol != other.pol
-        self.flow.add(other)
-        other.flow.add(self)
-
-    add_transition = (self, label, port):
-        if port.pol == self.pol
-            transitions = self.p_transitions
-        else
-            transitions = self.n_transitions
-        try
-            transitions[label].add(port)
-        except KeyError as _
-            transitions[label] = set([port])
-
-merge = (dst, src):
-    assert dst.pol == src.pol
-    for head in src.heads
-        dst.heads.add(head)
-    for v in src.flow
-        dst.add_flow(v)
-    for label, vs in src.p_transitions.items()
-        try
-            dst.p_transitions[label].update(vs)
-        except KeyError as _
-            dst.p_transitions[label] = set(vs)
-    for label, vs in src.n_transitions.items()
-        try
-            dst.n_transitions[label].update(vs)
-        except KeyError as _
-            dst.n_transitions[label] = set(vs)
-
-biunify = (pair, visited):
-    return if pair in visited
-    visited.add(pair)
-    p, q = pair
-    assert p.pol > q.pol, "biunify must have form (+p, -q)"
-
-    # Check that subtyping constraints hold
-    for x in p.heads
-        for y in q.heads
-            extract_subtype(p,q,x,y)
-            assert is_subtype(x, y), ["type error", x, y]
-
-    # Rewrites the graph, eliminating the constraint
-    for s in q.flow
-        merge(s, p)
-    for s in p.flow
-        merge(s, q)
-
-    # Constraint decomposition
-    for label, ss in p.p_transitions.items()
-        uu = q.p_transitions.get(label, [])
-        for s in ss
-            for u in uu
-                biunify([s,u], visited)
-    for label, ss in p.n_transitions.items()
-        uu = q.n_transitions.get(label, [])
-        for u in uu
-            for s in ss
-                biunify([u,s], visited)
-
-biunify_check = (pair, visited):
-    return if pair in visited
-    visited.add(pair)
-    p, q = pair
-    assert p.pol > q.pol, "biunify must have form (+p, -q)"
-
-    # Check that subtyping constraints hold
-    for x in p.heads
-        for y in q.heads
-            extract_subtype(p,q,x,y)
-            if not is_subtype(x, y)
-                raise CheckFail(pair)
-
-    # Constraint decomposition
-    for label, ss in p.p_transitions.items()
-        uu = q.p_transitions.get(label, [])
-        for s in ss
-            for u in uu
-                biunify_check([s,u], visited)
-    for label, ss in p.n_transitions.items()
-        uu = q.n_transitions.get(label, [])
-        for u in uu
-            for s in ss
-                biunify_check([u,s], visited)
-
-class CheckFail extends Exception
-    +init = (self, pair):
-        self.pair = pair
-        self.traceback = null
-
-
-extract_subtype = (p, q, x, y):
-    if x == "int" and y == "sub_" and (["sub"] not in p.p_transitions)
-        sub_impl = Node(+1)
-        a0 = Node(-1)
-        a0.heads.add("rational")
-        a1 = Node(-1)
-        a1.heads.add("rational")
-        r0 = Node(+1)
-        r0.heads.add("int")
-        sub_impl.add_transition(["dom", 0], a0)
-        sub_impl.add_transition(["dom", 1], a1)
-        sub_impl.add_transition(["cod"], r0)
-        sub_impl.heads.add("->")
-        p.add_transition(["sub"], sub_impl)
-    if x == "rational" and y == "sub_" and (["sub"] not in p.p_transitions)
-        sub_impl = Node(+1)
-        a0 = Node(-1)
-        a0.heads.add("rational")
-        a1 = Node(-1)
-        a1.heads.add("rational")
-        r0 = Node(+1)
-        r0.heads.add("rational")
-        sub_impl.add_transition(["dom", 0], a0)
-        sub_impl.add_transition(["dom", 1], a1)
-        sub_impl.add_transition(["cod"], r0)
-        sub_impl.heads.add("->")
-        p.add_transition(["sub"], sub_impl)
-
-# TODO: it is not practical to list all trait edges for the positive
-#       types. The 'biunify' needs a function that infers the missing
-#       subtype transitions when they're needed.
-is_subtype = (x, y):
-    #if x == "frac" or x == "integ"
-    #    return true
-    if x == y
-        return true
-    if x == "int" and y == "rational"
-        return true
-    if x == "int" and y in int_traits
-        return true
-    if x == "vec" and y in vec_traits
-        return true
-    if x == "rational" and y in rational_traits
-        return true
-
-    # The coercion collects these traits into 'req'
-    #if x == "coercion" and y in traits
-    #    return true
-    return false
-
-int_traits = set([
-    "ord", "vec_carry",
-    "add",
-    "sub",
-    "sub_"
-])
-rational_traits = set([
-    "sub_"
-])
-vec_traits = set([
-    "add"
-])
-
-traits = set([
-    "ord", "vec_carry",
-    "add"
-])
-
-
-# TODO: The tarjan SCC is also required for solving a problem with
-#       type indeterminates.
-
-# The SCC finding is likely necessary for handling recursion.
-# For now we use it to detect recursion so it fails before causing issues.
-# https://en.wikipedia.org/wiki/Tarjan%27s_strongly_connected_components_algorithm
-# TODO: improve the comments to explain the algorithm.
-tarjan_find_scc = (decls):
-    index = 0
-    s = []
-    output = []
-
-    strong_connect = (decl):
-        # set depth index for v to the smallest unused index
-        decl.index = index
-        decl.lowlink = index
-        index += 1
-        s.append(decl)
-        decl.on_stack = true
-
-        # consider successors of v
-        for w in decl.depends
-            if w.index == null # successor not visited yet
-                strong_connect(w)
-                decl.lowlink = min(decl.lowlink, w.lowlink)
-            elif w.on_stack
-                # successor w is in stack S, in the current SCC
-                # Note: The next line may look odd - but is correct.
-                # It says w.index not w.lowlink; that is deliberate and from the original paper
-                decl.lowlink = min(decl.lowlink, w.index)
-            # if w is not on stack, then (v,w) is a cross-edge in the DFS and
-            #    must be ignored.
-        # If v is a root node, pop the stack and generate an SCC
-        if decl.lowlink == decl.index
-            scc = set()
-            w = null
-            while w != decl
-                w = s.pop()
-                w.on_stack = false
-                scc.add(w)
-            output.append(scc)
-
-    for decl in decls
-        if decl.index == null
-            strong_connect(decl)
-    return output
+    root = copy_state(scheme.root)
+    return (root=root)
 
 class Def
     +init = (self, name, args, body):
         self.name = name
         self.args = args
         self.body = body
-        self.free_vars = free_vars(body)
-        self.free_vars.difference_update(args)
-        self.depends = set()
 
-        # For tarjan find SCC
-        self.index = null
-        self.lowlink = null
-        self.on_stack = false
-
-    +repr = (self):
-        return repr(["Def", self.name, self.args, self.body])
-
-# TODO: to really test this out 'proper', we also may want
-#       freeform record types
-
-free_vars = (a):
-    if isinstance(a, Let)
-        r = free_vars(a.rhs)
-        r.discard(a.name)
-        r.update( free_vars(a.lhs) )
-        return r
-    if isinstance(a, Abs)
-        r = free_vars(a.body)
-        for arg in a.args
-            r.discard(arg)
-        return r
-    if isinstance(a, App)
-        r = free_vars(a.lhs)
-        for arg in a.args
-            r.update(free_vars(arg))
-        return r
-    if isinstance(a, IfThenElse)
-        r = free_vars(a.cond)
-        r.update(free_vars(a.t))
-        r.update(free_vars(a.f))
-        return r
-    if isinstance(a, Var)
-        return set([a.name])
-    if isinstance(a, Lit)
-        return set()
-    assert false, ["free vars for?", a]
+class App
+    +init = (self, lhs, args):
+        self.lhs = lhs
+        self.args = args
 
 class Let
     +init = (self, name, lhs, rhs):
@@ -1000,24 +443,10 @@ class Let
         self.lhs = lhs
         self.rhs = rhs
 
-    +repr = (self):
-        return repr(["Let", self.name, self.lhs, self.rhs])
-
 class Abs
     +init = (self, args, body):
         self.args = args
         self.body = body
-
-    +repr = (self):
-        return repr(["Abs", self.args, self.body])
-
-class App
-    +init = (self, lhs, args):
-        self.lhs = lhs
-        self.args = args
-
-    +repr = (self):
-        return repr(["App", self.lhs, self.args])
 
 class IfThenElse
     +init = (self, cond, t, f):
@@ -1025,35 +454,11 @@ class IfThenElse
         self.t = t
         self.f = f
 
-    +repr = (self):
-        return repr(["If", self.cond, self.t, self.f])
-
 class Var
     +init = (self, name):
         self.name = name
-
-    +repr = (self):
-        return self.name
 
 class Lit
     +init = (self, value, type):
         self.value = value
         self.type = type
-
-    +repr = (self):
-        return repr(["Lit", self.value, self.type])
-
-actions = object({
-    def = Def
-    let = Let
-    abs = Abs
-    app = App
-    if_then_else = IfThenElse
-    var = Var
-    string = (val):
-        return Lit(val, "string")
-    int = (val):
-        return Lit(val, "int")
-    rational = (val):
-        return Lit(val, "rational")
-})

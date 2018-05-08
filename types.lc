@@ -1,0 +1,435 @@
+# So here I have it. Biunification with coercive operators.
+
+# TODO: Abstraction for callable objects.
+#       Provide a way to create new abstract types.
+
+# TODO: Bring this into 'suoml' and showcase.
+
+# sinkheader for callable.. (0)
+# So now the implementation has to supply op_callable with real
+# function.
+# 
+# s = (callee, arg_0, arg_1, arg_2) -> cod
+# op_site = OperatorSite(op_call, [0], get_function_header(4))
+# callee <: sink(0, op_site, s)
+
+# So arg3 function got to return 4-argc op_call
+
+# So operator 'call' would get (op_call, expected)
+# It can then derive the function signature shape that satisfies it.
+
+# This seemed really odd at the time of discovery. I am not sure
+# it works or is solid, but we will try it.
+
+# 'call' is special in that it responds to the 'expected' -shape.
+# other operators should just return their true shape.
+# (op_add, a&sink(0, A), b&sink(1, A)) -> c
+#   A = (+) (a, b) -> c
+#   OperatorSite(op_add, [0,1], get_function_header(2))
+
+# Operator table is bunch of responders.
+# And callables are valid responders.
+
+
+main = ():
+
+    s_int = State(+1)
+    s_int.heads.add(t_int)
+
+    s_rational = State(+1)
+    s_rational.heads.add(t_rational)
+
+
+    op_site = new_operator(null, [0,1], 2)
+
+    sink_0 = State(-1)
+    sink_0.heads.add(SinkHeader(0, op_site))
+    sink_0_o = State(+1)
+    sink_0_o.add_flow(sink_0)
+
+    sink_1 = State(-1)
+    sink_1.heads.add(SinkHeader(1, op_site))
+    sink_1_o = State(+1)
+    sink_1_o.add_flow(sink_1)
+
+    out_i = State(-1)
+    out_i.heads.add(get_function_header(2))
+    out_i.add_transition(dom[0], sink_0_o)
+    out_i.add_transition(dom[1], sink_1_o)
+
+    out   = State(+1)
+    out.add_flow(out_i)
+    sink_0.add_transition(op_site.edge, out_i)
+    sink_1.add_transition(op_site.edge, out_i)
+
+    visited = set()
+    print('step 1')
+    biunify([s_int,      sink_0], visited)
+    print('step 2')
+    biunify([s_rational, sink_1], visited)
+    print('step 3')
+    biunify([s_rational, sink_0], visited)
+    print('step 4')
+    biunify([s_int,      sink_1], visited)
+
+    for w in out.transitions[cod]
+        print(w.heads...)
+    # output:
+    # step 1
+    # step 2
+    # operator for rational
+    # coerce int 0 rational
+    # coerce rational 1 rational
+    # step 3
+    # coerce rational 0 rational
+    # step 4
+    # operator for int
+    # coerce int 0 int
+    # coerce int 1 int
+    # coerce int 1 rational
+    # rational
+    # int
+
+
+class Header
+    +init = (self, name):
+        self.name = name
+    +repr = (self):
+        return self.name
+
+class SinkHeader
+    +init = (self, index, site):
+        self.index = index
+        self.site = site
+    params = (self):
+        return []
+    stringify = (self, x):
+        return "<sink>"
+
+class OperatorSite
+    +init = (self, op, coerces, expect, operators, slots):
+        self.op = op
+        self.coerces = coerces
+        self.edge = Edge(+1)
+        self.expect = expect
+        self.operators = operators
+        self.slots = slots
+
+    transfer = (self, fn):
+        coerces = set(self.coerces)
+        expect = self.expect
+        operators = {}
+        slots = dict(self.slots)
+        for index, slot in self.operators.items()
+            operators[index] = (input=fn(slot.input), output=fn(slot.output))
+        return OperatorSite(self.op, coerces, expect, operators, slots)
+
+class SimpleHeader
+    +init = (self, name):
+        self.name = name
+    +repr = (self):
+        return self.name
+
+    params = (self):
+        return []
+    stringify = (self):
+        return self.name
+
+t_call = SimpleHeader('call')
+
+#class Interface extends Header
+#    +init = (self):
+#        null
+#
+#    face = (self):
+#        return self
+
+binary_operator = (op, head, expect):
+    if op == t_call and isinstance(head, FunctionHeader)
+        f = State(+1)
+        f.heads.add(expect)
+        z = State(-1)
+        z.heads.add(get_function_header(expect.argc - 1))
+
+        f.add_transition(dom[0], z)
+        for i in range(1, expect.argc)
+            port = new_port()
+            z.add_transition(dom[i-1], port.output)
+            f.add_transition(dom[i], port.input)
+        port = new_port()
+        z.add_transition(cod, port.input)
+        f.add_transition(cod, port.output)
+        return f
+    if op == t_call and head == t_call
+        f = State(+1)
+        f.heads.add(expect)
+        z = State(-1)
+        z.heads.add(head)
+        f.add_transition(dom[0], z)
+
+        op_site = new_operator(t_call, [0], expect.argc-1)
+        sink = new_port()
+        sink.input.heads.add(SinkHeader(0, op_site))
+        f.add_transition(dom[1], sink.input)
+
+        calltype = State(-1)
+        calltype.heads.add(op_site.expect)
+        calltype.add_transition(dom[0], sink.output)
+        sink.input.add_transition(op_site.edge, calltype)
+
+        for i in range(expect.argc-2)
+            port = new_port()
+            f.add_transition(dom[i+2], port.input)
+            calltype.add_transition(dom[i+1], port.output)
+
+        result = new_port()
+        calltype.add_transition(cod, result.input)
+        f.add_transition(cod, result.output)
+        return f
+
+    assert false, [op, head, expect]
+
+    #f = State(+1)
+    #f.heads.add(get_function_header(2))
+    #z = State(-1)
+    #z.heads.add(head)
+    #r = State(+1)
+    #r.heads.add(head)
+    #f.add_transition(dom[0], z)
+    #f.add_transition(dom[1], z)
+    #f.add_transition(cod, r)
+    #return f
+
+simple_coercion = (a, b):
+    if a == b
+        f = State(+1)
+        f.heads.add(get_function_header(1))
+        z = State(-1)
+        z.heads.add(a)
+        r = State(+1)
+        r.heads.add(b)
+        for edge in a.params()
+            p = State(+edge.pol)
+            q = State(-edge.pol)
+            p.add_flow(q)
+            r.add_transition(edge, p)
+            z.add_transition(edge, q)
+        f.add_transition(dom[0], z)
+        f.add_transition(cod, r)
+        return f
+    assert false, ['coercion', a,b]
+
+inference_coerce = (head, q, slot_idx, site, visited):
+    k = set([set([head])])
+
+    for i in site.slots
+        continue if i == slot_idx
+        n = set()
+        for t in site.slots[i]
+            for h in k
+                n.add(h.union([t]))
+        k = n
+    site.slots[slot_idx].add(head)
+
+    doms = set()
+    for i in site.slots
+        doms.add(dom[i])
+
+    coercions = set()
+    for heads in k
+        c = unique_coercion(heads)
+        for i in site.slots
+            if i == slot_idx
+                coercions.add([head, i])
+            else
+                for u in site.slots[i]
+                    if u in heads
+                        coercions.add([u,i])
+        if c in site.operators
+            ports = site.operators[c]
+        else
+            print('operator for', c)
+            fn = binary_operator(site.op, c, site.expect)
+
+            site.operators[c] = ports = {}
+            out = State(+1)
+            out.heads.update(fn.heads)
+            for e,ws in fn.transitions.items()
+                if e in doms
+                    xx = State(-1)
+                    out.add_transition(e, xx)
+                    yy = State(+1)
+                    xx.add_flow(yy)
+                    rr = State(-1)
+                    for w in ws
+                        merge(rr, w)
+                    ports[e] = (input=rr, output=yy)
+                else
+                    out.transitions[e] = ws
+            for w in q.transitions[site.edge]
+                biunify([out, w], visited)
+
+        for h,i in coercions
+            if [h,i,c] not in site.coerces
+                site.coerces.add([h,i,c])
+                print('coerce', h, i, c)
+
+                k = simple_coercion(h, c)
+                assert k.heads == set([get_function_header(1)])
+                    "type error"
+                z = State(-1)
+                for w in k.transitions[dom[0]]
+                    merge(z, w)
+                z.heads.clear()
+
+                port = ports[dom[i]]
+                biunify([port.output, z], visited)
+                for w in k.transitions[cod]
+                    biunify([w, port.input], visited)
+
+unique_coercion = (heads):
+    s = []
+    for y in heads
+        ok = true
+        for x in heads
+            ok = ok and (x == y or has_coercion(x, y))
+        if ok
+            s.append(y)
+    assert s.length == 1, ["bad coercion", list(heads), s]
+    return s[0]
+
+t_int = Header("int")
+t_rational = Header("rational")
+
+has_coercion = (x, y):
+    if x == t_int and y == t_rational
+        return true
+    return false
+
+class State
+    +init = (self, pol=+1):
+        self.pol = pol
+        self.heads = set()
+        self.flow = set()
+        self.transitions = {}
+
+    add_flow = (self, other):
+        assert self.pol != other.pol, "polarity conflict"
+        self.flow.add(other)
+        other.flow.add(self)
+
+    add_transition = (self, edge, state):
+        assert (edge.pol > 0) == (self.pol == state.pol),
+            ["polarity conflict", self.pol, edge.pol, state.pol]
+        try
+            self.transitions[edge].add(state)
+        except KeyError as _
+            self.transitions[edge] = set([state])
+
+class Edge
+    +init = (self, pol):
+        self.pol = pol
+
+class EdgeGroup
+    +init = (self, pol):
+        self.pol = pol
+        self.edges = {}
+
+    +getitem = (self, index):
+        try
+            return self.edges[index]
+        except KeyError as _
+            self.edges[index] = edg = Edge(self.pol)
+            return edg
+
+class FunctionHeader
+    +init = (self, argc):
+        self.argc = argc
+
+    params = (self):
+        for i in range(self.argc)
+            yield dom[i]
+        yield cod
+    stringify = (self, x):
+        if self.argc == 1
+            return x[dom[0]] ++ " -> " ++ x[cod]
+        a = []
+        for i in range(self.argc)
+            a.append(x[dom[i]])
+        return "(" ++ ", ".join(a) ++ ") -> " ++ x[cod]
+
+func_headers = {}
+get_function_header = (argc):
+    try
+        return func_headers[argc]
+    except KeyError as _
+        func_headers[argc] = head = FunctionHeader(argc)
+        return head
+
+cod = Edge(+1)
+dom = EdgeGroup(-1)
+
+biunify = (pair, visited):
+    if pair in visited
+        return
+    visited.add(pair)
+    p, q = pair
+    assert p.pol > q.pol, "polarity conflict"
+
+    for x in p.heads
+        for y in q.heads
+            assert fit_subtype(p, q, x, y, visited), ["type error", x, y]
+
+    for s in q.flow
+        merge(s, p)
+    for s in p.flow
+        merge(s, q)
+
+    for edge, ws in p.transitions.items()
+        wu = q.transitions.get(edge, {})
+        if edge.pol > 0
+            for s in ws
+                for u in wu
+                    biunify([s, u], visited)
+        else
+            for s in ws
+                for u in wu
+                    biunify([u, s], visited)
+
+fit_subtype = (p, q, x, y, visited):
+    if x == y
+        return true
+    if isinstance(y, SinkHeader)
+        inference_coerce(x, q, y.index, y.site, visited)
+        return true
+    return false
+
+merge = (dst, src):
+    assert dst.pol == src.pol, "polarity conflict"
+    for head in src.heads
+        dst.heads.add(head)
+    for state in src.flow
+        dst.add_flow(state)
+    for edge, ws in src.transitions.items()
+        try
+            dst.transitions[edge].update(ws)
+        except KeyError as _
+            dst.transitions[edge] = set(ws)
+
+new_port = (graph=null):
+    input = State(-1)
+    output = State(+1)
+    input.add_flow(output)
+    if graph
+        graph.add(input)
+        graph.add(output)
+    return (input=input, output=output)
+
+new_operator = (op, indices, argc):
+    coerces = set()
+    expect = get_function_header(argc)
+    operators = {}
+    slots = {}
+    for index in indices
+        slots[index] = set()
+    return OperatorSite(op, coerces, expect, operators, slots)

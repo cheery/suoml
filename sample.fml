@@ -1,10 +1,19 @@
 main(argv)
-    print("suber")
+    print("hello")
 
-faabr(n)
-    add(add(4, 3.1), 4)
+interesting(a)
+    a(20)
 
-fibonacci(n)
-    if gt(n, 2)
-    then add(fibonacci(sub(n,1)), fibonacci(sub(n,2)))
-    else 1
+interesting_2(b, c)
+    b(c, 20)
+
+foo(c)
+    interesting_2(call, c)
+
+#faabr(n)
+#    add(add(4, 3.1), 4)
+#
+#fibonacci(n)
+#    if gt(n, 2)
+#    then add(fibonacci(sub(n,1)), fibonacci(sub(n,2)))
+#    else 1
