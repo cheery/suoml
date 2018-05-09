@@ -10,10 +10,13 @@ interesting_2(b, c)
 foo(c)
     interesting_2(call, c)
 
-#faabr(n)
-#    add(add(4, 3.1), 4)
-#
-#fibonacci(n)
-#    if gt(n, 2)
-#    then add(fibonacci(sub(n,1)), fibonacci(sub(n,2)))
-#    else 1
+faabr(n)
+    add(add(n, 3.1), 4)
+
+fibonacci_3()
+    fibonacci(3)
+
+fibonacci(n)
+    if gt(n, 2)
+    then add(fibonacci(sub(n,1)), fibonacci(sub(n,2)))
+    else 1

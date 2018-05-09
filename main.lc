@@ -2,20 +2,12 @@ import grammar
 import types
 
 # TODO: Start catching comments from this file and create .md file out of them.
-# TODO: Some simple arithmetic, maybe the fibonacci and such..
 # TODO: Figure out machinery for declaring new abstract datatypes.
 
 # The SCC finding is likely necessary for handling recursion.
 from graph_utils import
     tarjan_find_scc,
     greedy_biclique_decomposition
-
-t_string   = types.SimpleHeader('string')
-t_int      = types.SimpleHeader('int')
-t_rational = types.SimpleHeader('rational')
-
-t_unit = types.SimpleHeader('unit')
-
 
 language = grammar.read_file("suoml.grammar")
 
@@ -28,11 +20,11 @@ main = ():
         if_then_else = IfThenElse
         var = Var
         string = (val):
-            return Lit(val, t_string)
+            return Lit(val, types.t_string)
         int = (val):
-            return Lit(val, t_int)
+            return Lit(val, types.t_int)
         rational = (val):
-            return Lit(val, t_rational)
+            return Lit(val, types.t_rational)
     })
     parse = language.read_file("sample.fml")
     decls = parse.traverse((rule, args, loc):
@@ -46,16 +38,28 @@ main = ():
     f = types.State(+1)
     z = types.State(-1)
     r = types.State(+1)
-    z.heads.add(t_string)
-    r.heads.add(t_unit)
+    z.heads.add(types.t_string)
+    r.heads.add(types.t_unit)
     f.heads.add(types.get_function_header(1))
     f.add_transition(types.dom[0], z)
     f.add_transition(types.cod, r)
     declared['print'] = generalize(f, null)
 
     f = types.State(+1)
+    f.heads.add(types.t_add)
+    declared['add'] = generalize(f, null)
+
+    f = types.State(+1)
+    f.heads.add(types.t_sub)
+    declared['sub'] = generalize(f, null)
+
+    f = types.State(+1)
     f.heads.add(types.t_call)
     declared['call'] = generalize(f, null)
+
+    f = types.State(+1)
+    f.heads.add(types.t_gt)
+    declared['gt'] = generalize(f, null)
 
 
     namespace = {}
@@ -228,16 +232,16 @@ infer = (a, env, visited):
     if isinstance(a, IfThenElse)
         cond = infer(a.cond, env, visited)
 
-        boolean = Node(-1)
-        boolean.heads.add(bool_t)
+        boolean = types.State(-1)
+        boolean.heads.add(types.t_bool)
 
-        biunify([cond.root, boolean], visited)
+        types.biunify([cond.root, boolean], visited)
         t = infer(a.t, env, visited)
         f = infer(a.f, env, visited)
 
-        result = new_port()
-        biunify([t.root, result.input], visited)
-        biunify([f.root, result.input], visited)
+        result = types.new_port()
+        types.biunify([t.root, result.input], visited)
+        types.biunify([f.root, result.input], visited)
 
         return (root=result.output)
 
@@ -265,9 +269,11 @@ to_raw_type = (scheme):
     mapi = {}
     rvar_id = 0
 
-    trail = set()
+    # 'trail' used to be a set, but I wanted type annotations that
+    # truthfully display what's going on under.
+    trail = {}
 
-    s_visit = (state):
+    s_visit = (state, in_trail):
         assert state in scheme.generic
         if state in visi
             sym = "rec.r" ++ (rvar_id).to_string()
@@ -287,12 +293,14 @@ to_raw_type = (scheme):
             #       For now we hide them.
             if isinstance(head, types.SinkHeader)
                 name = repr(head.site.op)
-                trail.add("\n  " ++ name ++ " : " ++
-                    e_visit(state, head.site.edge))
+                w = k_visit(state, head.site.edge)
+                if w not in visi
+                    line = s_visit(w, true)
+                    trail[w] = "\n  " ++ name ++ " : " ++ line
                 if name not in typedecl
                     typedecl.append(name)
                 continue
-            typedecl.append(r_visit(head, state))
+            typedecl.append(r_visit(head, state, in_trail))
         for v in flow_variables[state]
             typedecl.append("a" ++ (v).to_string())
 
@@ -301,23 +309,26 @@ to_raw_type = (scheme):
         visi.discard(state)
         return "(" ++ operator.join(typedecl) ++ ")"
 
-    r_visit = (head, state):
+    r_visit = (head, state, in_trail):
         px = {}
         for edge in head.params()
-            px[edge] = e_visit(state, edge)
+            px[edge] = e_visit(state, edge, in_trail)
         return head.stringify(px)
 
-    e_visit = (state, edge):
+    e_visit = (state, edge, in_trail):
+        w = k_visit(state, edge)
+        return s_visit(w, in_trail)
+
+    k_visit = (state, edge):
         if edge not in state.transitions
             return "(error)"
         ws = state.transitions[edge]
         if ws.length == 0
             return "()"
         assert ws.length == 1, "not a reduced type form"
-        w = list(ws)[0]
-        return s_visit(w)
+        return list(ws)[0]
 
-    return s_visit(scheme.root) ++ "".join(trail)
+    return s_visit(scheme.root, false) ++ "".join(trail.values())
 
 # The generalize recalculates the 'free' state sets in the environment by
 # extending it. Then it runs a subset construction that takes everything

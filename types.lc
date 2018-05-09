@@ -136,6 +136,10 @@ class SimpleHeader
         return self.name
 
 t_call = SimpleHeader('call')
+t_add = SimpleHeader('add')
+t_sub = SimpleHeader('sub')
+
+t_gt = SimpleHeader('gt')
 
 #class Interface extends Header
 #    +init = (self):
@@ -186,6 +190,111 @@ binary_operator = (op, head, expect):
         calltype.add_transition(cod, result.input)
         f.add_transition(cod, result.output)
         return f
+    if op == t_call and head in [t_add,t_sub] and expect.argc == 3
+        f = State(+1)
+        f.heads.add(expect)
+        z = State(-1)
+        z.heads.add(head)
+        f.add_transition(dom[0], z)
+
+        op_site = new_operator(t_add, [0,1], 2)
+
+        sink0 = new_port()
+        sink0.input.heads.add(SinkHeader(0, op_site))
+        f.add_transition(dom[1], sink0.input)
+
+        sink1 = new_port()
+        sink1.input.heads.add(SinkHeader(1, op_site))
+        f.add_transition(dom[2], sink1.input)
+
+        result = new_port()
+
+        calltype = State(-1)
+        calltype.heads.add(op_site.expect)
+        calltype.add_transition(dom[0], sink0.output)
+        calltype.add_transition(dom[1], sink1.output)
+        calltype.add_transition(cod, result.input)
+        f.add_transition(cod, result.output)
+
+        sink0.input.add_transition(op_site.edge, calltype)
+        sink1.input.add_transition(op_site.edge, calltype)
+
+        return f
+
+    if op == t_call and head == t_gt and expect.argc == 3
+        f = State(+1)
+        f.heads.add(expect)
+        z = State(-1)
+        z.heads.add(head)
+        f.add_transition(dom[0], z)
+
+        op_site = new_operator(t_gt, [0,1], 2)
+
+        sink0 = new_port()
+        sink0.input.heads.add(SinkHeader(0, op_site))
+        f.add_transition(dom[1], sink0.input)
+
+        sink1 = new_port()
+        sink1.input.heads.add(SinkHeader(1, op_site))
+        f.add_transition(dom[2], sink1.input)
+
+        result = new_port()
+        result.input.heads.add(t_bool)
+        result.output.heads.add(t_bool)
+
+        calltype = State(-1)
+        calltype.heads.add(op_site.expect)
+        calltype.add_transition(dom[0], sink0.output)
+        calltype.add_transition(dom[1], sink1.output)
+        calltype.add_transition(cod, result.input)
+        f.add_transition(cod, result.output)
+
+        sink0.input.add_transition(op_site.edge, calltype)
+        sink1.input.add_transition(op_site.edge, calltype)
+
+        return f
+
+    if op in [t_add,t_sub] and head == t_rational
+        f = State(+1)
+        f.heads.add(get_function_header(2))
+        z1 = State(-1)
+        z1.heads.add(t_rational)
+        z2 = State(-1)
+        z2.heads.add(t_rational)
+        r = State(+1)
+        r.heads.add(t_rational)
+        f.add_transition(dom[0], z1)
+        f.add_transition(dom[1], z2)
+        f.add_transition(cod, r)
+        return f
+
+    if op in [t_add,t_sub] and head == t_int
+        f = State(+1)
+        f.heads.add(get_function_header(2))
+        z1 = State(-1)
+        z1.heads.add(t_int)
+        z2 = State(-1)
+        z2.heads.add(t_int)
+        r = State(+1)
+        r.heads.add(t_int)
+        f.add_transition(dom[0], z1)
+        f.add_transition(dom[1], z2)
+        f.add_transition(cod, r)
+        return f
+
+    if op in [t_gt] and head == t_int
+        f = State(+1)
+        f.heads.add(get_function_header(2))
+        z1 = State(-1)
+        z1.heads.add(t_int)
+        z2 = State(-1)
+        z2.heads.add(t_int)
+        r = State(+1)
+        r.heads.add(t_bool)
+        f.add_transition(dom[0], z1)
+        f.add_transition(dom[1], z2)
+        f.add_transition(cod, r)
+        return f
 
     assert false, [op, head, expect]
 
@@ -217,6 +326,17 @@ simple_coercion = (a, b):
         f.add_transition(dom[0], z)
         f.add_transition(cod, r)
         return f
+    if a == t_int and b == t_rational
+        f = State(+1)
+        f.heads.add(get_function_header(1))
+        z = State(-1)
+        z.heads.add(a)
+        r = State(+1)
+        r.heads.add(b)
+        f.add_transition(dom[0], z)
+        f.add_transition(cod, r)
+        return f
+
     assert false, ['coercion', a,b]
 
 inference_coerce = (head, q, slot_idx, site, visited):
@@ -237,6 +357,12 @@ inference_coerce = (head, q, slot_idx, site, visited):
 
     coercions = set()
     for heads in k
+        # In "proper" implementation, unique_coercion and
+        # binary_operator may fail, and there may be
+        # a default function listed for operation.
+        # If implemented, the coercion target should be
+        # marked 'default', and operator should be chosen
+        # as 'default'.
         c = unique_coercion(heads)
         for i in site.slots
             if i == slot_idx
@@ -248,7 +374,7 @@ inference_coerce = (head, q, slot_idx, site, visited):
         if c in site.operators
             ports = site.operators[c]
         else
-            print('operator for', c)
+            #print('operator for', c)
             fn = binary_operator(site.op, c, site.expect)
 
             site.operators[c] = ports = {}
@@ -272,7 +398,7 @@ inference_coerce = (head, q, slot_idx, site, visited):
         for h,i in coercions
             if [h,i,c] not in site.coerces
                 site.coerces.add([h,i,c])
-                print('coerce', h, i, c)
+                #print('coerce', h, i, c)
 
                 k = simple_coercion(h, c)
                 assert k.heads == set([get_function_header(1)])
@@ -298,12 +424,17 @@ unique_coercion = (heads):
     assert s.length == 1, ["bad coercion", list(heads), s]
     return s[0]
 
-t_int = Header("int")
-t_rational = Header("rational")
+t_string = SimpleHeader('string')
+t_bool   = SimpleHeader('bool')
+t_unit   = SimpleHeader('unit')
+t_int = SimpleHeader("int")
+t_rational = SimpleHeader("rational")
 
 has_coercion = (x, y):
     if x == t_int and y == t_rational
+        print('  tried', x, y)
         return true
+    print('! tried', x, y)
     return false
 
 class State
