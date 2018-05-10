@@ -1,10 +1,31 @@
-The work in this directory is based on Stephen Dolan's
-[MLsub](https://www.cl.cam.ac.uk/~sd601/mlsub/). The goal is
-to extend his work into a verifiable programming language
-that is flexible enough to dual as a computer algebra system.
+This is a small reference implementation of a subtyping type inferencer.
 
-The goal was successful, but the result is somewhat anticlimactic. The
-main outcome was this clause:
+Example of input:
+
+    fibonacci(n)
+        if gt(n, 2)
+        then add(fibonacci(sub(n,1)), fibonacci(sub(n,2)))
+        else 1
+
+And output for that fibonacci:
+
+    add :: (add)
+    sub :: (sub)
+    call :: (call)
+    gt :: (gt)
+    fibonacci :: ((gt & add & a0) -> (int))
+      gt : (((a0), (int)) -> (bool))
+      add : (((a0), (int)) -> (gt & add & a0))
+      add : (((a0), (int)) -> (gt & add & a0))
+
+The work in this directory is based on Stephen Dolan's
+[MLsub](https://www.cl.cam.ac.uk/~sd601/mlsub/). The goal of
+this project was to extend his work into a verifiable programming
+language that is flexible enough to dual as a computer algebra system.
+
+I succeeded.
+
+The main discovery in this project was this clause:
 
     B is a set of type constructors.
     exist! y in B. forall x in B. x --> y
@@ -22,8 +43,8 @@ An example: operator `a + b`.
     from `y`. Evaluate the result.
 
 The language used in this repository is the previous version of
-[Lever](https://github.com/cheery/lever). Code contains a small experimental
-implementation of coercive operators with subtyping and type inference.
+[Lever](https://github.com/cheery/lever). It resembles Python, although
+current Lever it is probably different when you get to read this.
 
 ## Coherent coercions
 

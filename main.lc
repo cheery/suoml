@@ -1,7 +1,6 @@
 import grammar
 import types
 
-# TODO: Start catching comments from this file and create .md file out of them.
 # TODO: Figure out machinery for declaring new abstract datatypes.
 
 # The SCC finding is likely necessary for handling recursion.
