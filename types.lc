@@ -3,8 +3,6 @@
 # TODO: Abstraction for callable objects.
 #       Provide a way to create new abstract types.
 
-# TODO: Bring this into 'suoml' and showcase.
-
 # sinkheader for callable.. (0)
 # So now the implementation has to supply op_callable with real
 # function.
@@ -30,99 +28,11 @@
 # Operator table is bunch of responders.
 # And callables are valid responders.
 
-
-main = ():
-
-    s_int = State(+1)
-    s_int.heads.add(t_int)
-
-    s_rational = State(+1)
-    s_rational.heads.add(t_rational)
-
-
-    op_site = new_operator(null, [0,1], 2)
-
-    sink_0 = State(-1)
-    sink_0.heads.add(SinkHeader(0, op_site))
-    sink_0_o = State(+1)
-    sink_0_o.add_flow(sink_0)
-
-    sink_1 = State(-1)
-    sink_1.heads.add(SinkHeader(1, op_site))
-    sink_1_o = State(+1)
-    sink_1_o.add_flow(sink_1)
-
-    out_i = State(-1)
-    out_i.heads.add(get_function_header(2))
-    out_i.add_transition(dom[0], sink_0_o)
-    out_i.add_transition(dom[1], sink_1_o)
-
-    out   = State(+1)
-    out.add_flow(out_i)
-    sink_0.add_transition(op_site.edge, out_i)
-    sink_1.add_transition(op_site.edge, out_i)
-
-    visited = set()
-    print('step 1')
-    biunify([s_int,      sink_0], visited)
-    print('step 2')
-    biunify([s_rational, sink_1], visited)
-    print('step 3')
-    biunify([s_rational, sink_0], visited)
-    print('step 4')
-    biunify([s_int,      sink_1], visited)
-
-    for w in out.transitions[cod]
-        print(w.heads...)
-    # output:
-    # step 1
-    # step 2
-    # operator for rational
-    # coerce int 0 rational
-    # coerce rational 1 rational
-    # step 3
-    # coerce rational 0 rational
-    # step 4
-    # operator for int
-    # coerce int 0 int
-    # coerce int 1 int
-    # coerce int 1 rational
-    # rational
-    # int
-
-
 class Header
     +init = (self, name):
         self.name = name
     +repr = (self):
         return self.name
-
-class SinkHeader
-    +init = (self, index, site):
-        self.index = index
-        self.site = site
-    params = (self):
-        return []
-    stringify = (self, x):
-        return "<sink>"
-
-class OperatorSite
-    +init = (self, op, coerces, expect, operators, slots):
-        self.op = op
-        self.coerces = coerces
-        self.edge = Edge(+1)
-        self.expect = expect
-        self.operators = operators
-        self.slots = slots
-
-    transfer = (self, fn):
-        coerces = set(self.coerces)
-        expect = self.expect
-        operators = {}
-        slots = dict(self.slots)
-        for index, slot in self.operators.items()
-            operators[index] = (input=fn(slot.input), output=fn(slot.output))
-        return OperatorSite(self.op, coerces, expect, operators, slots)
 
 class SimpleHeader
     +init = (self, name):
@@ -171,143 +81,63 @@ binary_operator = (op, head, expect):
         z.heads.add(head)
         f.add_transition(dom[0], z)
 
-        op_site = new_operator(t_call, [0], expect.argc-1)
-        sink = new_port()
-        sink.input.heads.add(SinkHeader(0, op_site))
-        f.add_transition(dom[1], sink.input)
-
-        calltype = State(-1)
-        calltype.heads.add(op_site.expect)
-        calltype.add_transition(dom[0], sink.output)
-        sink.input.add_transition(op_site.edge, calltype)
-
-        for i in range(expect.argc-2)
-            port = new_port()
-            f.add_transition(dom[i+2], port.input)
-            calltype.add_transition(dom[i+1], port.output)
-
-        result = new_port()
-        calltype.add_transition(cod, result.input)
-        f.add_transition(cod, result.output)
+        callsite = new_callsite(t_call, [0], expect.argc-1)
+        for i in range(1, expect.argc)
+            for w in callsite.transitions[dom[i-1]]
+                f.add_transition(dom[i], w)
+        for w in callsite.transitions[cod]
+            f.add_transition(cod, w)
         return f
     if op == t_call and head in [t_add,t_sub] and expect.argc == 3
-        f = State(+1)
-        f.heads.add(expect)
-        z = State(-1)
-        z.heads.add(head)
-        f.add_transition(dom[0], z)
-
-        op_site = new_operator(t_add, [0,1], 2)
-
-        sink0 = new_port()
-        sink0.input.heads.add(SinkHeader(0, op_site))
-        f.add_transition(dom[1], sink0.input)
-
-        sink1 = new_port()
-        sink1.input.heads.add(SinkHeader(1, op_site))
-        f.add_transition(dom[2], sink1.input)
-
-        result = new_port()
-
-        calltype = State(-1)
-        calltype.heads.add(op_site.expect)
-        calltype.add_transition(dom[0], sink0.output)
-        calltype.add_transition(dom[1], sink1.output)
-        calltype.add_transition(cod, result.input)
-        f.add_transition(cod, result.output)
-
-        sink0.input.add_transition(op_site.edge, calltype)
-        sink1.input.add_transition(op_site.edge, calltype)
-
-        return f
+        return new_callsite(head, [1, 2], 3)
 
     if op == t_call and head == t_gt and expect.argc == 3
-        f = State(+1)
-        f.heads.add(expect)
-        z = State(-1)
-        z.heads.add(head)
-        f.add_transition(dom[0], z)
-
-        op_site = new_operator(t_gt, [0,1], 2)
-
-        sink0 = new_port()
-        sink0.input.heads.add(SinkHeader(0, op_site))
-        f.add_transition(dom[1], sink0.input)
-
-        sink1 = new_port()
-        sink1.input.heads.add(SinkHeader(1, op_site))
-        f.add_transition(dom[2], sink1.input)
-
-        result = new_port()
-        result.input.heads.add(t_bool)
-        result.output.heads.add(t_bool)
-
-        calltype = State(-1)
-        calltype.heads.add(op_site.expect)
-        calltype.add_transition(dom[0], sink0.output)
-        calltype.add_transition(dom[1], sink1.output)
-        calltype.add_transition(cod, result.input)
-        f.add_transition(cod, result.output)
-
-        sink0.input.add_transition(op_site.edge, calltype)
-        sink1.input.add_transition(op_site.edge, calltype)
-
-        return f
+        return new_callsite(head, [1, 2], 3)
 
     if op in [t_add,t_sub] and head == t_rational
         f = State(+1)
-        f.heads.add(get_function_header(2))
+        f.heads.add(get_function_header(3))
         z1 = State(-1)
         z1.heads.add(t_rational)
         z2 = State(-1)
         z2.heads.add(t_rational)
         r = State(+1)
         r.heads.add(t_rational)
-        f.add_transition(dom[0], z1)
-        f.add_transition(dom[1], z2)
+        f.add_transition(dom[0], State(-1))
+        f.add_transition(dom[1], z1)
+        f.add_transition(dom[2], z2)
         f.add_transition(cod, r)
         return f
 
     if op in [t_add,t_sub] and head == t_int
         f = State(+1)
-        f.heads.add(get_function_header(2))
+        f.heads.add(get_function_header(3))
         z1 = State(-1)
         z1.heads.add(t_int)
         z2 = State(-1)
         z2.heads.add(t_int)
         r = State(+1)
         r.heads.add(t_int)
-        f.add_transition(dom[0], z1)
-        f.add_transition(dom[1], z2)
+        f.add_transition(dom[0], State(-1))
+        f.add_transition(dom[1], z1)
+        f.add_transition(dom[2], z2)
         f.add_transition(cod, r)
         return f
-
     if op in [t_gt] and head == t_int
         f = State(+1)
-        f.heads.add(get_function_header(2))
+        f.heads.add(get_function_header(3))
         z1 = State(-1)
         z1.heads.add(t_int)
         z2 = State(-1)
         z2.heads.add(t_int)
         r = State(+1)
         r.heads.add(t_bool)
-        f.add_transition(dom[0], z1)
-        f.add_transition(dom[1], z2)
+        f.add_transition(dom[0], State(-1))
+        f.add_transition(dom[1], z1)
+        f.add_transition(dom[2], z2)
         f.add_transition(cod, r)
         return f
-
     assert false, [op, head, expect]
-
-    #f = State(+1)
-    #f.heads.add(get_function_header(2))
-    #z = State(-1)
-    #z.heads.add(head)
-    #r = State(+1)
-    #r.heads.add(head)
-    #f.add_transition(dom[0], z)
-    #f.add_transition(dom[1], z)
-    #f.add_transition(cod, r)
-    #return f
 
 simple_coercion = (a, b):
     if a == b
@@ -339,80 +169,6 @@ simple_coercion = (a, b):
 
     assert false, ['coercion', a,b]
 
-inference_coerce = (head, q, slot_idx, site, visited):
-    k = set([set([head])])
-
-    for i in site.slots
-        continue if i == slot_idx
-        n = set()
-        for t in site.slots[i]
-            for h in k
-                n.add(h.union([t]))
-        k = n
-    site.slots[slot_idx].add(head)
-
-    doms = set()
-    for i in site.slots
-        doms.add(dom[i])
-
-    coercions = set()
-    for heads in k
-        # In "proper" implementation, unique_coercion and
-        # binary_operator may fail, and there may be
-        # a default function listed for operation.
-        # If implemented, the coercion target should be
-        # marked 'default', and operator should be chosen
-        # as 'default'.
-        c = unique_coercion(heads)
-        for i in site.slots
-            if i == slot_idx
-                coercions.add([head, i])
-            else
-                for u in site.slots[i]
-                    if u in heads
-                        coercions.add([u,i])
-        if c in site.operators
-            ports = site.operators[c]
-        else
-            #print('operator for', c)
-            fn = binary_operator(site.op, c, site.expect)
-
-            site.operators[c] = ports = {}
-            out = State(+1)
-            out.heads.update(fn.heads)
-            for e,ws in fn.transitions.items()
-                if e in doms
-                    xx = State(-1)
-                    out.add_transition(e, xx)
-                    yy = State(+1)
-                    xx.add_flow(yy)
-                    rr = State(-1)
-                    for w in ws
-                        merge(rr, w)
-                    ports[e] = (input=rr, output=yy)
-                else
-                    out.transitions[e] = ws
-            for w in q.transitions[site.edge]
-                biunify([out, w], visited)
-
-        for h,i in coercions
-            if [h,i,c] not in site.coerces
-                site.coerces.add([h,i,c])
-                #print('coerce', h, i, c)
-
-                k = simple_coercion(h, c)
-                assert k.heads == set([get_function_header(1)])
-                    "type error"
-                z = State(-1)
-                for w in k.transitions[dom[0]]
-                    merge(z, w)
-                z.heads.clear()
-
-                port = ports[dom[i]]
-                biunify([port.output, z], visited)
-                for w in k.transitions[cod]
-                    biunify([w, port.input], visited)
-
 unique_coercion = (heads):
     s = []
     for y in heads
@@ -437,15 +193,22 @@ has_coercion = (x, y):
     print('! tried', x, y)
     return false
 
-next_state = 0 
 class State
     +init = (self, pol=+1):
         self.pol = pol
         self.heads = set()
         self.flow = set()
         self.transitions = {}
-        self.state_id = next_state
-        next_state += 1
+        self.site = null
+
+    add_head = (self, head, cc):
+        if self.site
+            l = self.heads.length
+            self.heads.add(head)
+            if l < self.heads.length
+                cc.append([self.site, self, head])
+        else
+            self.heads.add(head)
 
     add_flow = (self, other):
         assert self.pol != other.pol, "polarity conflict"
@@ -460,8 +223,38 @@ class State
         except KeyError as _
             self.transitions[edge] = set([state])
 
-    +repr = (self):
-        return "State(" ++ self.state_id.to_string() ++ ")"
+class OperatorSite
+    +init = (self, op, expect, states, activations):
+        self.op = op
+        self.expect = expect
+        self.states = states
+        self.activations = activations
+
+    copy = (self, fn):
+        op = self.op
+        expect = self.expect
+        states = {}
+        activations = {}
+        n_site = OperatorSite(op, expect, states, activations)
+        for edge, state in self.states.items()
+            states[edge] = n_state = fn(state)
+            if state.site == self
+                n_state.site = n_site
+        for head, activation in self.activations.items()
+            activations[head] = activation.copy(fn)
+        return n_site
+
+class Activation
+    +init = (self, head, state, coerce):
+        self.head = head     # head
+        self.state = state   # State(+1)
+        self.coerce = coerce # set([head, index])
+
+    copy = (self, fn):
+        head = self.head
+        state = fn(self.state)
+        coerce = self.coerce
+        return Activation(head, state, coerce)
 
 class Edge
     +init = (self, pol):
@@ -495,6 +288,9 @@ class FunctionHeader
             a.append(x[dom[i]])
         return "(" ++ ", ".join(a) ++ ") -> " ++ x[cod]
 
+    +repr = (self):
+        return "FunctionHeader(" ++ self.argc.to_string() ++ ")"
+
 func_headers = {}
 get_function_header = (argc):
     try
@@ -511,16 +307,18 @@ biunify = (pair, visited):
         return
     visited.add(pair)
     p, q = pair
+    assert isinstance(p, State) and isinstance(q, State), [p,q]
     assert p.pol > q.pol, "polarity conflict"
 
     for x in p.heads
         for y in q.heads
-            assert fit_subtype(p, q, x, y, visited), ["type error", x, y]
+            assert x == y, ["type error", x, y]
 
+    cc = []
     for s in q.flow
-        merge(s, p)
+        merge(s, p, cc)
     for s in p.flow
-        merge(s, q)
+        merge(s, q, cc)
 
     for edge, ws in p.transitions.items()
         wu = q.transitions.get(edge, {})
@@ -533,18 +331,13 @@ biunify = (pair, visited):
                 for u in wu
                     biunify([u, s], visited)
 
-fit_subtype = (p, q, x, y, visited):
-    if x == y
-        return true
-    if isinstance(y, SinkHeader)
-        inference_coerce(x, q, y.index, y.site, visited)
-        return true
-    return false
+    for site, sink, head in cc
+        update_coercion(site, sink, head, visited)
 
-merge = (dst, src):
+merge = (dst, src, cc):
     assert dst.pol == src.pol, "polarity conflict"
     for head in src.heads
-        dst.heads.add(head)
+        dst.add_head(head, cc)
     for state in src.flow
         dst.add_flow(state)
     for edge, ws in src.transitions.items()
@@ -562,11 +355,90 @@ new_port = (graph=null):
         graph.add(output)
     return (input=input, output=output)
 
-new_operator = (op, indices, argc):
-    coerces = set()
+new_callsite = (op, indices, argc):
     expect = get_function_header(argc)
-    operators = {}
-    slots = {}
-    for index in indices
-        slots[index] = set()
-    return OperatorSite(op, coerces, expect, operators, slots)
+    states = {}
+    activations = {}
+    site = OperatorSite(op, expect, states, activations)
+
+    callsite = State(+1)
+    callsite.heads.add(expect)
+    for i in range(argc)
+        if i in indices
+            sink = State(+1)
+            sink.site = site
+        else
+            sink = State(+1)
+        arg = State(-1)
+        arg.add_flow(sink)
+        states[dom[i]] = sink
+        callsite.add_transition(dom[i], arg)
+    sink = State(-1)
+    out = State(+1)
+    out.add_flow(sink)
+    states[cod] = sink
+    callsite.add_transition(cod, out)
+    return callsite
+
+update_coercion = (site, pivot, head, visited):
+    k = set([set([head])])
+    doms = set()
+    for edge, sink in site.states.items()
+        continue if sink.site != site
+        doms.add(edge)
+        continue if sink == pivot
+        n = set()
+        for t in sink.heads
+            for h in k
+                n.add(h.union([t]))
+        k = n
+    # k contains all the cartesian sets introduced by the new head.
+    # doms contains all domain edges that coerce.
+
+    # Every new cartesian produces a potential new coercion.
+    for heads in k
+        coercions = set()
+        # 'unique_coercion' determines the new target type.
+        # it may fail, but in real implementation there
+        # might be a default function listed for the operator.
+        target = unique_coercion(heads)
+        for edge in doms
+            sink = site.states[edge]
+            if sink == pivot
+                coercions.add([head, edge])
+            else
+                for h in sink.heads
+                    if h in heads
+                        coercions.add([h, edge])
+        # Coercion is not re-applied if it has been already done.
+        if target in site.activations
+            activation = site.activations[target]
+        else
+            state = binary_operator(site.op, target, site.expect)
+            assert state.heads == set([site.expect])
+                "type error"
+            activation = Activation(target, state, set())
+
+            for edge, state in site.states.items()
+                continue if edge in doms
+                if edge.pol > 0
+                    for w in activation.state.transitions[edge]
+                        biunify([w, state], visited)
+                else
+                    for w in activation.state.transitions[edge]
+                        biunify([state, w], visited)
+        for h, edge in coercions
+            continue if [h, edge] in activation.coerce
+            activation.coerce.add([h, edge])
+            k = simple_coercion(h, target)
+            assert k.heads == set([get_function_header(1)])
+                "type error"
+            # Removing heads from the domain.
+            for w in k.transitions[dom[0]]
+                w.heads.clear()
+            sink = site.states[edge]
+            for w in k.transitions[dom[0]]
+                biunify([sink, w], visited)
+            for w in k.transitions[cod]
+                for d in activation.state.transitions[edge]
+                    biunify([w, d], visited)

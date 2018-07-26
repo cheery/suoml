@@ -1,8 +1,6 @@
 import grammar
 import types
 
-# TODO: Modify the design to handle coercive subtyping through special node in operators.
-
 # TODO: Figure out machinery for declaring new abstract datatypes.
 
 # The SCC finding is likely necessary for handling recursion.
@@ -179,23 +177,14 @@ run_constraints = (constraints, declared, visited):
             args = []
             for arg in c[1]
                 args.append(build_node(arg, declared, visited))
-            port = c[2]
-
-            op_site = types.new_operator(types.t_call, [0], args.length)
-            sink = types.new_port()
-            sink.input.heads.add(types.SinkHeader(0, op_site))
-
+            input = c[2]
+            call_c = types.new_callsite(types.t_call, [0], args.length)
             calltype = types.State(-1)
-            calltype.heads.add(op_site.expect)
-            calltype.add_transition(types.dom[0], sink.output)
-            i = 1
-            for arg in args[1 .:]
-                calltype.add_transition(types.dom[i], arg)
-                i += 1
-            calltype.add_transition(types.cod, c[2])
-            sink.input.add_transition(op_site.edge, calltype)
-
-            types.biunify([args[0], sink.input], visited)
+            calltype.heads.add(types.get_function_header(args.length))
+            for i in range(args.length)
+                calltype.add_transition(types.dom[i], args[i])
+            calltype.add_transition(types.cod, input)
+            types.biunify([call_c, calltype], visited)
         elif which == "<:"
             o = build_node(c[1], declared, visited)
             i = build_node(c[2], declared, visited, -1)
@@ -257,19 +246,18 @@ to_raw_type = (scheme):
         else
             operator = " & "
 
+        for w in state.flow
+            continue if not w.site
+            name = repr(w.site.op)
+            if w.site not in visi
+                visi.add(w.site)
+                px = {}
+                for edge in w.site.expect.params()
+                    px[edge] = s_visit(w.site.states[edge], true)
+                line = w.site.expect.stringify(px)
+                trail[w.site] = "\n  " ++ name ++ " : " ++ line
         typedecl = []
         for head in state.heads
-            # TODO: Sink headers should get different treatment,
-            #       For now we hide them.
-            if isinstance(head, types.SinkHeader)
-                name = repr(head.site.op)
-                w = k_visit(state, head.site.edge)
-                if w not in visi
-                    line = s_visit(w, true)
-                    trail[w] = "\n  " ++ name ++ " : " ++ line
-                if name not in typedecl
-                    typedecl.append(name)
-                continue
             typedecl.append(r_visit(head, state, in_trail))
         for v in flow_variables[state]
             typedecl.append("a" ++ (v).to_string())
@@ -286,8 +274,13 @@ to_raw_type = (scheme):
         return head.stringify(px)
 
     e_visit = (state, edge, in_trail):
-        w = k_visit(state, edge)
-        return s_visit(w, in_trail)
+        ws = k_visit(state, edge)
+        if ws.length == 1
+            return s_visit(ws[0], in_trail)
+        rr = []
+        for w in ws
+            rr.append(s_visit(w, in_trail))
+        return "<" ++ "+".join(rr) ++ ">"
 
     k_visit = (state, edge):
         if edge not in state.transitions
@@ -295,8 +288,7 @@ to_raw_type = (scheme):
         ws = state.transitions[edge]
         if ws.length == 0
             return "()"
-        assert ws.length == 1, "not a reduced type form"
-        return list(ws)[0]
+        return list(ws)
 
     return s_visit(scheme.root, false) ++ "".join(trail.values())
 
@@ -317,21 +309,24 @@ generalize = (root, free=set()):
     # membership : {Node : set(Node)}
     subsets = {}
     membership = {}
+    sites = set()
 
-    reduce_site_port = (port):
+    reduce_site = (site):
+        if site not in sites
+            sites.add(site)
+            site.copy(reduce_single)
+    reduce_single = (port):
         return reduce_subset(port.pol, set([port]))
     reduce_subset = (pol, subset):
         if subset in subsets
             return subsets[subset]
         subsets[subset] = s = types.State(pol)
-        rw_edge = {}
         for n in subset
             assert n not in free, "bug: subset must not contain free states"
+            for w in n.flow
+                if w.site
+                    reduce_site(w.site)
             for head in n.heads
-                if isinstance(head, types.SinkHeader)
-                    site = head.site.transfer(reduce_site_port)
-                    rw_edge[head.site.edge] = site.edge
-                    head = types.SinkHeader(head.index, site)
                 s.heads.add(head)
             try
                 membership[n].append(s)
@@ -343,7 +338,6 @@ generalize = (root, free=set()):
 
         transitions = {}
         for edge, ws in s.transitions.items()
-            edge = rw_edge.get(edge, edge)
             extern = set()
             for w in ws
                 if w in free
@@ -355,7 +349,7 @@ generalize = (root, free=set()):
 
     if root in free
         return (generic=set(), root=root)
-    root = reduce_subset(root.pol, set([root]))
+    root = reduce_single(root)
     for state, ss in membership.items()
         continue if state.pol > 0
         for w in state.flow
@@ -368,23 +362,21 @@ generalize = (root, free=set()):
 
 instantiate_type = (scheme):
     mapping = {}
+    sites = set()
     copy_state = (n):
         return n if n not in scheme.generic
         try
             return mapping[n]
         except KeyError as _
             mapping[n] = m = types.State(n.pol)
-            rw_edge = {}
+            if n.site and n.site not in sites
+                sites.add(n.site)
+                n.site.copy(copy_state)
             for head in n.heads
-                if isinstance(head, types.SinkHeader)
-                    site = head.site.transfer(copy_state)
-                    rw_edge[head.site.edge] = site.edge
-                    head = types.SinkHeader(head.index, site)
                 m.heads.add(head)
             for w in n.flow
                 m.flow.add(copy_state(w))
             for edge, ws in n.transitions.items()
-                edge = rw_edge.get(edge, edge)
                 for w in ws
                     m.add_transition(edge, copy_state(w))
             return m
