@@ -437,12 +437,15 @@ has_coercion = (x, y):
     print('! tried', x, y)
     return false
 
+next_state = 0 
 class State
     +init = (self, pol=+1):
         self.pol = pol
         self.heads = set()
         self.flow = set()
         self.transitions = {}
+        self.state_id = next_state
+        next_state += 1
 
     add_flow = (self, other):
         assert self.pol != other.pol, "polarity conflict"
@@ -456,6 +459,9 @@ class State
             self.transitions[edge].add(state)
         except KeyError as _
             self.transitions[edge] = set([state])
+
+    +repr = (self):
+        return "State(" ++ self.state_id.to_string() ++ ")"
 
 class Edge
     +init = (self, pol):

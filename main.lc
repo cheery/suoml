@@ -1,6 +1,8 @@
 import grammar
 import types
 
+# TODO: Modify the design to handle coercive subtyping through special node in operators.
+
 # TODO: Figure out machinery for declaring new abstract datatypes.
 
 # The SCC finding is likely necessary for handling recursion.
@@ -66,55 +68,79 @@ main = ():
         namespace[decl.name] = decl
 
     dependency_graph = {}
+    constraints_graph = {}
     for decl in decls
+        constraints = []
         dependencies = set()
-        for name in scan_free_vars(decl)
-            if name in namespace
-                dependencies.add(name)
-            elif name not in declared
-                assert false, ["not present", name]
+        constraint_generation(decl, constraints, dependencies, declared, {})
         dependency_graph[decl.name] = dependencies
+        constraints_graph[decl.name] = constraints
 
     scc = tarjan_find_scc(dependency_graph)
 
     for group in scc
         is_rec = group_is_recursive(group, dependency_graph)
-        new_types = infer_group(declared, group, is_rec, namespace)
-        declared.update(new_types)
+        solve_constraints(declared, group, is_rec, constraints_graph)
 
     for name, scheme in declared.items()
         print(name, "::", to_raw_type(scheme))
 
-scan_free_vars = (a):
+constraint_generation = (a, cn, dep, declared, env):
     if isinstance(a, Def)
-        free = scan_free_vars(a.body)
-        free.difference_update(a.args)
-        return free
+        ab = Abs(a.args, a.body)
+        result = constraint_generation(ab, cn, dep, declared, env)
+        cn.append(['def', a.name, result])
+        return result
     if isinstance(a, Abs)
-        free = scan_free_vars(a.body)
+        env = dict(env)
+        args = []
         for arg in a.args
-            free.discard(arg)
-        return free
+            input, output = new_port(cn, true)
+            env[arg] = output
+            args.append(input)
+        body = constraint_generation(a.body, cn, dep, declared, env)
+        return ['function', args, body]
     if isinstance(a, App)
-        free = scan_free_vars(a.lhs)
+        lhs = constraint_generation(a.lhs, cn, dep, declared, env)
+        args = [lhs]
         for arg in a.args
-            free.update(scan_free_vars(arg))
-        return free
+            arg = constraint_generation(arg, cn, dep, declared, env)
+            args.append(arg)
+        input, output = new_port(cn)
+        cn.append(['call', args, input])
+        return output
     if isinstance(a, Var)
-        return set([a.name])
+        if a.name in env
+            return env[a.name]
+        if a.name not in declared
+            dep.add(a.name)
+        return ['instantiate', a.name]
     if isinstance(a, Lit)
-        return set()
-    if isinstance(a, Let)
-        free = scan_free_vars(a.rhs)
-        free.discard(a.name)
-        free.update( scan_free_vars(a.lhs) )
-        return free
+        return ['literal', a.type]
     if isinstance(a, IfThenElse)
-        free = scan_free_vars(a.cond)
-        free.update(scan_free_vars(a.t))
-        free.update(scan_free_vars(a.f))
-        return free
-    assert false, ["free vars for?", a]
+        cond = constraint_generation(a.cond, cn, dep, declared, env)
+        cn.append(['<:', cond, ['literal', types.t_bool]])
+        t = constraint_generation(a.t, cn, dep, declared, env)
+        f = constraint_generation(a.f, cn, dep, declared, env)
+        input, output = new_port(cn)
+        cn.append(['<:', t, input])
+        cn.append(['<:', f, input])
+        return output
+    # This system can provide full let-polymorphism, but I left
+    # left that feature away because it requires you to track
+    # the free variables in the code.
+    if isinstance(a, Let)
+        lhs = constraint_generation(a.lhs, cn, dep, declared, env)
+        env = dict(env)
+        env[a.name] = lhs
+        return constraint_generation(a.rhs, cn, dep, declared, env)
+    assert false, ["implement constraint_generation", a]
+
+new_port = (cn, free=false):
+    input = types.State(-1)
+    output = types.State(+1)
+    cn.append(['port', input, output])
+    return [input, output]
 
 group_is_recursive = (group, dependency_graph):
     if group.length == 1
@@ -123,137 +149,82 @@ group_is_recursive = (group, dependency_graph):
     else
         return true
 
-# First create scope with blank variables
-# Next do inference as usual, the biunification associates the signature
-# with the previous blank variable.
-# Finally the variables end up being correctly generalized, and
-# it yields polymorphic types for declarations.
-infer_group = (predeclared, group, recursive, namespace):
-    env = TypeEnv(predeclared, null)
+solve_constraints = (declared, group, is_rec, constraints_graph):
     visited = set()
-    result = {}
-    if recursive
+    constraints = []
+    for name in group
+        constraints.extend(constraints_graph[name])
+    if is_rec
+        free  = set()
         ports = {}
+        env = dict(declared)
         for name in group
-            ports[name] = port = types.new_port(env.free)
-            env.schemes[name] = generalize(port.output, env)
-             
+            port = types.new_port(free)
+            ports[name] = port
+            env[name] = generalize(port.output, free)
+        for name, result in run_constraints(constraints, env, visited)
+            types.biunify([result, ports[name].input], visited)
         for name in group
-            port = ports[name]
-            decl = namespace[name]
-            scheme = infer(Abs(decl.args, decl.body), env, visited)
-            types.biunify([scheme.root, port.input], visited)
-
-        for name in group
-            port = ports[name]
-            result[name] = generalize(port.output, null)
+            declared[name] = generalize(ports[name].output, null)
     else
-        for name in group
-            decl = namespace[name]
-            scheme = infer(Abs(decl.args, decl.body), env, visited)
-            result[name] = generalize(scheme.root, null)
-    return result
+        for name, result in run_constraints(constraints, declared, visited)
+            declared[name] = generalize(result, null)
 
-# THE STRUCTURE OF TYPE ENV
-# parent  : type_env
-# free    : set(State)
-#   The set of states that are free in this type env.
-#   Nodes must be removed from this env if they become free in parent.
-# schemes : {generic: set(State), root: State}
-#   'generic' are generic parts of the binding. They *must* not be reachable
-#   from any 'free' set.
-#   'root' is the root state of the type.
-class TypeEnv
-    +init = (self, schemes, parent):
-        self.schemes = schemes
-        self.parent = parent
-        self.free = set()
+run_constraints = (constraints, declared, visited):
+    for c in constraints
+        which = c[0]
+        if which == "port"
+            c[1].add_flow(c[2])
+        elif which == "call"
+            args = []
+            for arg in c[1]
+                args.append(build_node(arg, declared, visited))
+            port = c[2]
 
-    +getitem = (self, name):
-        try
-            scheme = self.schemes[name]
-            return scheme
-        except KeyError as ke
-            raise ke if not self.parent
-            return self.parent[name]
+            op_site = types.new_operator(types.t_call, [0], args.length)
+            sink = types.new_port()
+            sink.input.heads.add(types.SinkHeader(0, op_site))
 
-infer = (a, env, visited):
-    if isinstance(a, Abs)
-        a_env = TypeEnv({}, env)
-        ports = []
-        for arg in a.args
-            port = types.new_port(a_env.free)
-            ports.append(port)
-            a_env.schemes[arg] = generalize(port.output, a_env)
-        a_scheme = infer(a.body, a_env, visited)
+            calltype = types.State(-1)
+            calltype.heads.add(op_site.expect)
+            calltype.add_transition(types.dom[0], sink.output)
+            i = 1
+            for arg in args[1 .:]
+                calltype.add_transition(types.dom[i], arg)
+                i += 1
+            calltype.add_transition(types.cod, c[2])
+            sink.input.add_transition(op_site.edge, calltype)
 
-        functype = types.State(+1)
-        functype.heads.add(types.get_function_header(ports.length))
-        for i in range(ports.length)
-            functype.add_transition(types.dom[i], ports[i].input)
-        functype.add_transition(types.cod, a_scheme.root)
-        return (root=functype)
+            types.biunify([args[0], sink.input], visited)
+        elif which == "<:"
+            o = build_node(c[1], declared, visited)
+            i = build_node(c[2], declared, visited, -1)
+            types.biunify([o, i], visited)
+        elif which == "def"
+            yield [c[1], build_node(c[2], declared, visited)]
+        else
+            assert false, which
 
-    if isinstance(a, App)
-        lhs_scheme = infer(a.lhs, env, visited)
-
-        op_site = types.new_operator(types.t_call, [0],
-            1 + a.args.length)
-        sink = types.new_port()
-        sink.input.heads.add(types.SinkHeader(0, op_site))
-
-        calltype = types.State(-1)
-        calltype.heads.add(op_site.expect)
-        calltype.add_transition(types.dom[0], sink.output)
-        i = 1
-        for arg in a.args
-            arg_scheme = infer(arg, env, visited)
-            calltype.add_transition(types.dom[i], arg_scheme.root)
-            i += 1
-        result = types.new_port()
-
-        calltype.add_transition(types.cod, result.input)
-        sink.input.add_transition(op_site.edge, calltype)
-
-        types.biunify([lhs_scheme.root, sink.input], visited)
-
-        return (root=result.output)
-
-    if isinstance(a, Var)
-        a_scheme = instantiate_type(env[a.name])
-        return a_scheme
-
-    if isinstance(a, Lit)
-        result = types.State(+1)
-        result.heads.add(a.type)
-        return (root=result)
-
-    if isinstance(a, IfThenElse)
-        cond = infer(a.cond, env, visited)
-
-        boolean = types.State(-1)
-        boolean.heads.add(types.t_bool)
-
-        types.biunify([cond.root, boolean], visited)
-        t = infer(a.t, env, visited)
-        f = infer(a.f, env, visited)
-
-        result = types.new_port()
-        types.biunify([t.root, result.input], visited)
-        types.biunify([f.root, result.input], visited)
-
-        return (root=result.output)
-
-    if isinstance(a, Let)
-        lhs_scheme = inference(a.lhs, env, visited)
-
-        a_env = TypeEnv(env)
-        a_env.schemes[a.name] = generalize(lhs_scheme.root, env)
-        rhs_scheme = inference(a.rhs, a_env, visited)
-
-        return (root=rhs_scheme.root)
-
-    assert false, ["implement infer(a)", a]
+build_node = (node_desc, declared, visited, pol=+1):
+    if isinstance(node_desc, types.State)
+        return node_desc
+    if node_desc[0] == "instantiate"
+        scheme = instantiate_type(declared[node_desc[1]])
+        return scheme.root
+    if node_desc[0] == "literal"
+        result = types.State(pol)
+        result.heads.add(node_desc[1])
+        return result
+    if node_desc[0] == "function"
+        args = node_desc[1]
+        resu = node_desc[2]
+        functype = types.State(pol)
+        functype.heads.add(types.get_function_header(args.length))
+        for i in range(args.length)
+            functype.add_transition(types.dom[i], args[i])
+        functype.add_transition(types.cod, resu)
+        return functype
+    assert false, node_desc
 
 # Remember that for subtyping, type variables represent flows.
 # This means that only-covariant or only-contravariant type variables
@@ -333,30 +304,14 @@ to_raw_type = (scheme):
 # extending it. Then it runs a subset construction that takes everything
 # not in 'free' and constructs a new graph. 'generic' ends up labeling the
 # states present in this new sub-graph.
-generalize = (root, env):
-    recalculate_free = (env):
-        if env == null
-            return set()
-        free = recalculate_free(env.parent)
-        # Nodes free in parent do not need to appear in free set
-        env.free.difference_update(free)
-
-        visit = (state):
-            if state not in free
-                env.free.add(state)
-
-        # type_env.free fills up while this is going on.
-        for state in env.free
-            for w in state.flow
-                visit(w)
-            for edge, ws in state.transitions.items()
-                for w in ws
-                    visit(w)
-
-        free.update(env.free)
-        return free
-    free = recalculate_free(env)
-
+generalize = (root, free=set()):
+    # env_free fills up while this is going on.
+    for state in free
+        for w in state.flow
+            free.add(w)
+        for edge, ws in state.transitions.items()
+            for w in ws
+                free.add(w)
 
     # subsets : {set(Node) : Node}
     # membership : {Node : set(Node)}
